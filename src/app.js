@@ -24,10 +24,9 @@ const allowedOrigins = [
   "http://localhost:5174",
   "http://localhost:5175",
   "http://localhost:5176",
-  "https://www.sidtelfers.co.uk",
-  "https://sidtelfers.co.uk",
-  "https://admin.sidtelfers.co.uk",
-  "https://z38kwv4g-5175.inc1.devtunnels.ms"
+  "https://www.plantpure-website.vercel.app",
+  "https://plantpure-website.vercel.app",
+  "https://plantpure-admin-six.vercel.app",
 ];
 
 const corsOptions = {
@@ -100,7 +99,7 @@ app.get("/api/health", (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     success: true,
-    message: "SidTelfers Ecommerce API Running",
+    message: "Plantpure API Running",
   });
 });
 
