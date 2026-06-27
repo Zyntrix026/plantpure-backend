@@ -6,6 +6,7 @@ mongoose.set("bufferCommands", false);
 const connectDB = async () => {
   if (!MONGO_URI) {
     throw new Error("MONGO_URI is not configured");
+    console.log("MONGO_URI:", MONGO_URI);
   }
 
   if (mongoose.connection.readyState === 1) {
@@ -21,4 +22,7 @@ const connectDB = async () => {
   console.log("MongoDB Connected Successfully");
 };
 
+
 export default connectDB;
+
+

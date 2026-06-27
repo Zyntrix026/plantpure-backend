@@ -3,6 +3,7 @@ import cors from "cors";
 import mongoose from "mongoose";
 import routes from "./routes/index.js";
 import { stripeWebhook } from "./modules/payments/payment.controller.js";
+import facebookRoutes from './modules/facebook/facebook.routes.js';
 
 const app = express();
 
@@ -83,6 +84,8 @@ const getHealthPayload = () => {
   };
 };
 
+
+app.use('/api/v1/facebook', facebookRoutes)
 app.get("/health", (req, res) => {
   const payload = getHealthPayload();
   res.status(payload.database.ready ? 200 : 503).json(payload);
@@ -99,7 +102,7 @@ app.get("/api/health", (req, res) => {
 app.get("/", (req, res) => {
   res.json({
     success: true,
-    message: "Plantpure API Running",
+    message: "PlantPure API Running",
   });
 });
 

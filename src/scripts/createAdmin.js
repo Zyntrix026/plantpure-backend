@@ -10,7 +10,7 @@ export const createAdmin = async () => {
     // Naya Admin Data
     const adminData = {
       name: "Shahrukh Khan",
-      email: "shahrukh@zyntrixptvltd.com",
+      email: "alam@zyntrixptvltd.com",
       password: "Admin@123",
       role: "admin",
     };

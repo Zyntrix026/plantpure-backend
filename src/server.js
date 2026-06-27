@@ -10,12 +10,14 @@ const connectWithRetry = async () => {
   } catch (error) {
     console.error(`Database connection unavailable: ${error.message}`);
     console.error(`Retrying database connection in ${RETRY_DELAY_MS / 1000} seconds...`);
+    
     setTimeout(connectWithRetry, RETRY_DELAY_MS);
   }
-};
+}; 
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
 connectWithRetry();
+ 
