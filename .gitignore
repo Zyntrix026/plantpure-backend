@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.production
+
+# Log
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dev only files
+test-endpoints.http
+AUTH_API_DOCUMENTATION.md
+IMPLEMENTATION_SUMMARY.md
+QUICK_START.md
