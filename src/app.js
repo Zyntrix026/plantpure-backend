@@ -23,11 +23,9 @@ const DB_STATE = {
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
-  "http://localhost:5175",
-  "http://localhost:5176",
-  "https://www.plantpure-website.vercel.app",
-  "https://plantpure-website.vercel.app",
-  "https://plantpure-admin-six.vercel.app",
+  "https://www.plantpure.in",
+  "https://plantpure.in",
+  "https://admin.plantpure.in",
 ];
 
 const corsOptions = {
