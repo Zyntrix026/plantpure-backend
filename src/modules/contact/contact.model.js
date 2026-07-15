@@ -39,11 +39,6 @@ const InquirySchema = new mongoose.Schema(
       required: [true, "Quantity is required"],
       min: [1, "Quantity must be at least 1"],
     },
-    subject: {
-      type: String,
-      required: [true, "Subject is required"],
-      trim: true,
-    },
     message: {
       type: String,
       required: [true, "Message is required"],
