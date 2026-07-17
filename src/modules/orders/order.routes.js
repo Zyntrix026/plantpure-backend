@@ -4,6 +4,7 @@ import {
   createOrderAfterPayment,
   getMyOrders,
   getOrderById,
+  getOrderByCfOrderId,
   getAllOrders,
   updateOrderStatus,
   cancelOrder,
@@ -33,6 +34,7 @@ router.post("/track-guest", trackGuestOrder);
 
 // ─── Guest + Registered ───────────────────────────────────────────────────────
 router.post("/create-after-payment", optionalAuth, createOrderAfterPayment);
+router.get("/by-cf/:cfOrderId", optionalAuth, getOrderByCfOrderId);
 
 // ─── Customer Routes ──────────────────────────────────────────────────────────
 router.post("/create", authenticatedUser, createOrder);

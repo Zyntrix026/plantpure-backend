@@ -11,6 +11,7 @@ import {
 } from "../../utils/distance.js";
 import { sendOrderConfirmationToUser, sendNewOrderAlertToAdmin, sendCancellationEmailToCustomer, sendCancellationAlertToAdmin, sendReadyForPickupEmail, sendOrderDeliveredEmail } from "../../utils/email.service.js";
 import { recordCouponUsageService } from "../coupons/coupon.service.js";
+import cashfreeService from "../../utils/cashfree.service.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -228,11 +229,29 @@ export const getOrderByIdService = async (orderId, userId, role) => {
 
   if (!order) throw new Error("Order not found");
 
-  if (
-    role === "customer" &&
-    order.userId._id.toString() !== userId.toString()
-  ) {
-    throw new Error("Access denied");
+  if (role === "customer") {
+    const ownerId = order.userId?._id?.toString() ?? order.userId?.toString();
+    if (!ownerId || ownerId !== userId.toString())
+      throw new Error("Access denied");
+  }
+
+  return order;
+};
+
+// ─── Get Order by Cashfree Order ID ──────────────────────────────────────────
+
+export const getOrderByCfOrderIdService = async (cfOrderId, userId, role) => {
+  const order = await Order.findOne({ cfOrderId })
+    .populate("userId", "name email phone")
+    .populate("orderItems.productId", "title slug")
+    .lean();
+
+  if (!order) throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+
+  if (role === "customer") {
+    const ownerId = order.userId?._id?.toString() ?? order.userId?.toString();
+    if (!order.isGuest && (!ownerId || ownerId !== userId.toString()))
+      throw Object.assign(new Error("Access denied"), { statusCode: 403 });
   }
 
   return order;
@@ -506,30 +525,24 @@ export const cancelOrderService = async (orderId, requesterId, role, reason = ""
     );
   }
 
-  // ── 4. Stripe refund (only if payment was made) ──
-  let stripeRefundId = null;
-  if (order.paymentStatus === "paid" && order.paymentIntentId) {
-    // Duplicate refund guard — check if refund already exists
+  // ── 4. Cashfree refund (only if payment was made) ──
+  let refundId = null;
+  if (order.paymentStatus === "paid" && order.cfOrderId) {
     if (order.paymentStatus === "refunded")
       throw Object.assign(new Error("Refund already processed for this order"), { statusCode: 400 });
 
     try {
-      const refund = await stripe.refunds.create({
-        payment_intent: order.paymentIntentId,
-        reason: "requested_by_customer",
-        metadata: { orderId: order._id.toString(), orderNumber: order.orderNumber },
-      });
-      stripeRefundId = refund.id;
+      const refund = await cashfreeService.createRefund(order.cfOrderId, order.totalPrice, order.orderNumber);
+      refundId = refund.refund_id;
       order.paymentStatus = "refunded";
       order.paymentResult = {
         ...order.paymentResult?.toObject?.() ?? {},
-        refundId: refund.id,
+        refundId: refund.refund_id,
         refundedAt: new Date(),
       };
-    } catch (stripeErr) {
-      // Surface Stripe errors clearly
+    } catch (cfErr) {
       throw Object.assign(
-        new Error(`Stripe refund failed: ${stripeErr.message}`),
+        new Error(`Cashfree refund failed: ${cfErr.message}`),
         { statusCode: 502 }
       );
     }
@@ -584,7 +597,7 @@ export const cancelOrderService = async (orderId, requesterId, role, reason = ""
     if (emailTo) {
       await Promise.all([
         sendCancellationEmailToCustomer(emailTo, nameTo, order, order.totalPrice),
-        sendCancellationAlertToAdmin(order, stripeRefundId, cancelledByLabel),
+        sendCancellationAlertToAdmin(order, refundId, cancelledByLabel),
       ]);
     }
   } catch (emailErr) {
@@ -593,7 +606,7 @@ export const cancelOrderService = async (orderId, requesterId, role, reason = ""
 
   return {
     order,
-    refundId: stripeRefundId,
+    refundId,
     refundAmount: order.totalPrice,
   };
 };
@@ -680,18 +693,212 @@ export const getOrderStatsService = async () => {
 
 // ─── 8a. Create Order After Payment (Payment-First Flow) ────────────────────
 
-import Stripe from "stripe";
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+// export const createOrderAfterPaymentService = async (userId, paymentIntentId, shippingAddress, shippingMethod = "delivery", guestData = null) => {
+//   const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
+//   if (!intent || intent.status !== "succeeded") {
+//     throw Object.assign(new Error("Payment not completed. Please complete payment first."), { statusCode: 400 });
+//   }
 
-export const createOrderAfterPaymentService = async (userId, paymentIntentId, shippingAddress, shippingMethod = "delivery", guestData = null) => {
-  // 1. Verify payment with Stripe
-  const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
-  if (!intent || intent.status !== "succeeded") {
-    throw Object.assign(new Error("Payment not completed. Please complete payment first."), { statusCode: 400 });
+//   const existing = await Order.findOne({ paymentIntentId });
+//   if (existing) return existing;
+
+//   const isGuest = !userId;
+
+//   let rawItems;
+//   if (!isGuest) {
+//     const cart = await Cart.findOne({ userId });
+//     if (!cart || cart.items.length === 0) throw new Error("Your cart is empty");
+//     rawItems = cart.items;
+//   } else {
+//     if (!guestData?.items || guestData.items.length === 0) throw new Error("Cart items are required");
+//     if (!guestData?.guestEmail) throw Object.assign(new Error("Email is required for guest checkout"), { statusCode: 400 });
+//     rawItems = guestData.items;
+//   }
+
+//   const productIds = rawItems.map((i) => i.productId);
+//   const products = await Product.find({ _id: { $in: productIds } }).select(
+//     "title sku stock status images basePrice vatPercentage shipping_category hasVariants variants",
+//   );
+//   const productMap = {};
+//   products.forEach((p) => (productMap[p._id.toString()] = p));
+
+//   const stockErrors = [];
+//   for (const item of rawItems) {
+//     const product = productMap[item.productId.toString()];
+//     if (!product) { stockErrors.push(`Product "${item.name}" no longer exists`); continue; }
+//     if (product.status !== "Active") { stockErrors.push(`"${product.title}" is no longer available`); continue; }
+//     let availableStock;
+//     if (product.hasVariants && item.variantId) {
+//       const variant = product.variants.find((v) => v._id.toString() === item.variantId.toString());
+//       if (!variant) { stockErrors.push(`Variant not found for "${item.name}"`); continue; }
+//       availableStock = variant.stock;
+//     } else {
+//       availableStock = product.stock;
+//     }
+//     if (availableStock < item.quantity) {
+//       stockErrors.push(`${item.name} has only ${availableStock} unit(s) in stock (requested: ${item.quantity})`);
+//     }
+//   }
+//   if (stockErrors.length > 0) throw new Error(stockErrors.join(" | "));
+
+//   const orderItems = rawItems.map((item) => {
+//     const product = productMap[item.productId.toString()];
+//     let base, sku;
+//     if (product.hasVariants && item.variantId) {
+//       const variant = product.variants.find((v) => v._id.toString() === item.variantId.toString());
+//       base = variant.discountPrice ?? variant.price;
+//       sku = variant.sku || product.sku;
+//     } else {
+//       base = product.discountPrice ?? product.basePrice;
+//       sku = product.sku;
+//     }
+//     const vat = product.vatPercentage ? (base * product.vatPercentage) / 100 : 0;
+//     return {
+//       productId: item.productId,
+//       variantId: (product.hasVariants && item.variantId) ? item.variantId : null,
+//       name: item.name,
+//       sku,
+//       quantity: item.quantity,
+//       image: product.images?.[0]?.url || "",
+//       vatPercentage: product.vatPercentage ?? 0,
+//       shipping_category: product.shipping_category ?? "SP",
+//       priceAtPurchase: Number((base + vat).toFixed(2)),
+//     };
+//   });
+
+//   let shippingPrice = 0;
+//   if (shippingMethod === "delivery") {
+//     if (shippingAddress.lat == null || shippingAddress.lng == null) {
+//       throw Object.assign(new Error("lat and lng are required for delivery orders"), { statusCode: 400 });
+//     }
+//     const { lat: STORE_LAT, lng: STORE_LNG } = getStoreCoords();
+//     const distanceKm = haversineDistance(STORE_LAT, STORE_LNG, shippingAddress.lat, shippingAddress.lng);
+//     validateDeliveryRange(shippingAddress.lat, shippingAddress.lng);
+//     shippingPrice = calcCartDeliveryFee(orderItems, distanceKm);
+//   }
+
+//   const { itemsPrice, taxPrice, totalPrice } = calcPrices(orderItems, shippingPrice);
+
+//   const couponMeta = intent.metadata?.couponCode
+//     ? {
+//         code: intent.metadata.couponCode || null,
+//         couponId: intent.metadata.couponId || null,
+//         discountAmount: parseFloat(intent.metadata.discountAmount || "0"),
+//         type: null,
+//         isFreeShipping: intent.metadata.isFreeShipping === "true",
+//       }
+//     : null;
+
+//   const couponDiscount = couponMeta?.discountAmount || 0;
+//   const finalTotalPrice = parseFloat(Math.max(totalPrice - couponDiscount, 0).toFixed(2));
+
+//   const order = await Order.create({
+//     ...(isGuest ? { isGuest: true, guestEmail: guestData.guestEmail } : { userId }),
+//     orderItems,
+//     shippingAddress,
+//     shippingMethod,
+//     paymentMethod: "Stripe",
+//     paymentStatus: "paid",
+//     orderStatus: "pending",
+//     paymentIntentId,
+//     paymentResult: { gatewayPaymentId: paymentIntentId, paidAt: new Date() },
+//     itemsPrice,
+//     shippingPrice,
+//     taxPrice,
+//     totalPrice: finalTotalPrice,
+//     coupon: couponMeta
+//       ? {
+//           code: couponMeta.code,
+//           couponId: couponMeta.couponId,
+//           discountAmount: couponMeta.discountAmount,
+//           isFreeShipping: couponMeta.isFreeShipping,
+//         }
+//       : { code: null, couponId: null, discountAmount: 0, isFreeShipping: false },
+//     statusHistory: [
+//       { status: "pending", note: "Order placed" },
+//     ],
+//   });
+
+//   if (couponMeta?.couponId && couponMeta?.code) {
+//     try {
+//       await recordCouponUsageService({
+//         couponId:       couponMeta.couponId,
+//         couponCode:     couponMeta.code,
+//         userId:         isGuest ? null : userId,
+//         orderId:        order._id,
+//         guestEmail:     isGuest ? guestData.guestEmail : null,
+//         discountAmount: couponMeta.discountAmount,
+//       });
+//     } catch (couponErr) {
+//       console.error("Coupon usage recording failed:", couponErr.message);
+//     }
+//   }
+
+//   await Product.bulkWrite(
+//     rawItems.map((item) => {
+//       if (item.variantId) {
+//         return {
+//           updateOne: {
+//             filter: { _id: item.productId, "variants._id": item.variantId },
+//             update: { $inc: { "variants.$.stock": -item.quantity } },
+//           },
+//         };
+//       }
+//       return {
+//         updateOne: {
+//           filter: { _id: item.productId },
+//           update: { $inc: { stock: -item.quantity } },
+//         },
+//       };
+//     }),
+//   );
+
+//   if (!isGuest) {
+//     await Cart.findOneAndUpdate({ userId }, { $set: { items: [], totalPrice: 0, totalSavings: 0 } });
+//   }
+
+//   await checkAndNotifyStockOut(order.orderItems);
+
+//   try {
+//     let emailTo, nameTo;
+//     if (isGuest) {
+//       emailTo = guestData.guestEmail;
+//       nameTo = shippingAddress.fullName;
+//     } else {
+//       const user = await User.findById(userId).select("email name").lean();
+//       emailTo = user?.email;
+//       nameTo = user?.name;
+//     }
+//     if (emailTo) {
+//       await Promise.all([
+//         sendOrderConfirmationToUser(emailTo, nameTo, order),
+//         sendNewOrderAlertToAdmin(emailTo, nameTo, order),
+//       ]);
+//     }
+//   } catch (emailErr) {
+//     console.error("Email sending failed:", emailErr.message);
+//   }
+
+//   return order;
+// };
+
+// ─── 8. Check Delivery Availability ─────────────────────────────────────────
+
+
+export const createOrderAfterPaymentService = async (userId, cfOrderId, shippingAddress, shippingMethod = "delivery", guestData = null) => {
+  
+  // 1. Verify payment with Cashfree (Stripe replace hua)
+  const cashfreeOrder = await cashfreeService.getOrderDetails(cfOrderId);
+  
+  if (!cashfreeOrder || cashfreeOrder.order_status !== "PAID") {
+    throw Object.assign(
+      new Error("Payment not completed. Please complete payment via Cashfree first."), 
+      { statusCode: 400 }
+    );
   }
 
-  // 2. Idempotency
-  const existing = await Order.findOne({ paymentIntentId });
+  // 2. Idempotency Check (Duplicate orders se bachne ke liye)
+  const existing = await Order.findOne({ cfOrderId });
   if (existing) return existing;
 
   const isGuest = !userId;
@@ -775,14 +982,15 @@ export const createOrderAfterPaymentService = async (userId, paymentIntentId, sh
 
   const { itemsPrice, taxPrice, totalPrice } = calcPrices(orderItems, shippingPrice);
 
-  // Extract coupon data from Stripe PI metadata
-  const couponMeta = intent.metadata?.couponCode
+  // Extract coupon data from Cashfree order_tags (Kyunki Cashfree metadata ko order_tags object me bhejta hai)
+  const tags = cashfreeOrder.order_tags || {};
+  const couponMeta = tags.couponCode
     ? {
-        code: intent.metadata.couponCode || null,
-        couponId: intent.metadata.couponId || null,
-        discountAmount: parseFloat(intent.metadata.discountAmount || "0"),
+        code: tags.couponCode || null,
+        couponId: tags.couponId || null,
+        discountAmount: parseFloat(tags.discountAmount || "0"),
         type: null,
-        isFreeShipping: intent.metadata.isFreeShipping === "true",
+        isFreeShipping: tags.isFreeShipping === "true",
       }
     : null;
 
@@ -790,17 +998,17 @@ export const createOrderAfterPaymentService = async (userId, paymentIntentId, sh
   const couponDiscount = couponMeta?.discountAmount || 0;
   const finalTotalPrice = parseFloat(Math.max(totalPrice - couponDiscount, 0).toFixed(2));
 
-  // 7. Create order
+  // 7. Create order in MongoDB
   const order = await Order.create({
     ...(isGuest ? { isGuest: true, guestEmail: guestData.guestEmail } : { userId }),
     orderItems,
     shippingAddress,
     shippingMethod,
-    paymentMethod: "Stripe",
+    paymentMethod: "Cashfree",
     paymentStatus: "paid",
     orderStatus: "pending",
-    paymentIntentId,
-    paymentResult: { gatewayPaymentId: paymentIntentId, paidAt: new Date() },
+    cfOrderId, // paymentIntentId ki jagah cfOrderId save ho raha hai
+    paymentResult: { gatewayPaymentId: cfOrderId, paidAt: new Date() },
     itemsPrice,
     shippingPrice,
     taxPrice,
@@ -814,11 +1022,11 @@ export const createOrderAfterPaymentService = async (userId, paymentIntentId, sh
         }
       : { code: null, couponId: null, discountAmount: 0, isFreeShipping: false },
     statusHistory: [
-      { status: "pending", note: "Order placed" },
+      { status: "pending", note: "Order placed via Cashfree" },
     ],
   });
 
-  // 8. Record coupon usage atomically (after order created)
+  // 8. Record coupon usage atomically
   if (couponMeta?.couponId && couponMeta?.code) {
     try {
       await recordCouponUsageService({
@@ -885,8 +1093,6 @@ export const createOrderAfterPaymentService = async (userId, paymentIntentId, sh
 
   return order;
 };
-
-// ─── 8. Check Delivery Availability ─────────────────────────────────────────
 
 export const checkDeliveryAvailabilityService = (lat, lng) => {
   const { lat: STORE_LAT, lng: STORE_LNG } = getStoreCoords();
@@ -1055,19 +1261,16 @@ export const approveCancellationService = async (orderId, adminId) => {
     )
   );
 
-  // Stripe refund if paid
-  let stripeRefundId = null;
-  if (order.paymentStatus === "paid" && order.paymentIntentId) {
+  // Cashfree refund if paid
+  let refundId = null;
+  if (order.paymentStatus === "paid" && order.cfOrderId) {
     try {
-      const refund = await stripe.refunds.create({
-        payment_intent: order.paymentIntentId,
-        reason: "requested_by_customer",
-      });
-      stripeRefundId = refund.id;
+      const refund = await cashfreeService.createRefund(order.cfOrderId, order.totalPrice, order.orderNumber);
+      refundId = refund.refund_id;
       order.paymentStatus = "refunded";
-      order.paymentResult = { ...order.paymentResult?.toObject?.() ?? {}, refundId: refund.id, refundedAt: new Date() };
-    } catch (stripeErr) {
-      throw Object.assign(new Error(`Stripe refund failed: ${stripeErr.message}`), { statusCode: 502 });
+      order.paymentResult = { ...order.paymentResult?.toObject?.() ?? {}, refundId: refund.refund_id, refundedAt: new Date() };
+    } catch (cfErr) {
+      throw Object.assign(new Error(`Cashfree refund failed: ${cfErr.message}`), { statusCode: 502 });
     }
   }
 
@@ -1094,12 +1297,12 @@ export const approveCancellationService = async (orderId, adminId) => {
     if (emailTo) {
       await Promise.all([
         sendCancellationEmailToCustomer(emailTo, nameTo, order, order.totalPrice),
-        sendCancellationAlertToAdmin(order, stripeRefundId, "Admin"),
+        sendCancellationAlertToAdmin(order, refundId, "Admin"),
       ]);
     }
   } catch (e) { console.error("Email error:", e.message); }
 
-  return { order, refundId: stripeRefundId };
+  return { order, refundId };
 };
 
 // ─── Reject Cancellation Request (Admin) ─────────────────────────────────────

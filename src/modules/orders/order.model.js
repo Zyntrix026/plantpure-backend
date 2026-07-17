@@ -56,7 +56,7 @@ const orderSchema = new mongoose.Schema(
     // --- PAYMENT ---
     paymentMethod: {
       type: String,
-      enum: ["Stripe", "Razorpay", "PayPal"],
+      enum: ["Stripe", "Razorpay", "PayPal", "Cashfree", "COD"],
       required: true,
       default: "COD",
     },
@@ -75,6 +75,11 @@ const orderSchema = new mongoose.Schema(
     paymentIntentId: {
       type: String,
       index: true,
+    },
+    cfOrderId: {
+      type: String,
+      index: true,
+      default: null,
     },
     // --- ORDER STATUS ---
     orderStatus: {
