@@ -26,7 +26,8 @@ const allowedOrigins = [
   "https://www.plantpure.in",
   "https://plantpure.in",
   "https://admin.plantpure.in",
-  "https://craftworld1.vercel.app"
+  "https://www.craftworld.online",
+  "https://craftworld.online"
 ];
 
 const corsOptions = {
