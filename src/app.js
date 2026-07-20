@@ -4,7 +4,8 @@ import mongoose from "mongoose";
 import routes from "./routes/index.js";
 import { stripeWebhook } from "./modules/payments/payment.controller.js";
 import facebookRoutes from './modules/facebook/facebook.routes.js';
-
+import webhookRoutes from "./modules/webhook/webhook.routes.js";
+import instagramRoutes from "./modules/instagram/instagram.routes.js";
 const app = express();
 
 /* =======================
@@ -64,6 +65,10 @@ app.post(
 /* =======================
    BODY PARSER
 ======================= */
+app.use((req, res, next) => {
+  console.log("➡️", req.method, req.originalUrl);
+  next();
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -96,6 +101,8 @@ app.get("/api/health", (req, res) => {
   res.status(payload.database.ready ? 200 : 503).json(payload);
 });
 
+app.use("/webhook", webhookRoutes);
+app.use("/api/instagram", instagramRoutes);
 /* =======================
    ROOT
 ======================= */
