@@ -17,6 +17,8 @@ import dashboardRoutes from "../modules/dashboard/dashboard.routes.js";
 import couponRoutes from "../modules/coupons/coupon.routes.js";
 import legalRoutes from "../modules/legal page/legalRoutes.js";
 import campaignRoutes from "../modules/campaign/campaign.routes.js";
+import blogRoutes from "../modules/blog/blog.routes.js";
+import contactRoutes from "../modules/contact/contact.routes.js";
 
 const router = express.Router();
 
@@ -73,6 +75,12 @@ router.use("/legal", legalRoutes);
 
 // Campaign Management
 router.use("/campaigns", campaignRoutes);
+
+// Blog Management
+router.use("/blogs",blogRoutes);
+
+// Inquiry Management
+router.use("/inquiries", contactRoutes);
 
 // Health check
 router.get("/health", (req, res) => {
