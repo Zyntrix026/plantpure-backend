@@ -7,7 +7,7 @@ export const verifyWebhook = (req, res) => {
     mode === "subscribe" &&
     token === process.env.VERIFY_TOKEN
   ) {
-    console.log("Webhook Verified");
+    // console.log("Webhook Verified");
     return res.status(200).send(challenge);
   }
 
@@ -17,15 +17,15 @@ export const verifyWebhook = (req, res) => {
 export const receiveWebhook = async (req, res) => {
   const body = req.body;
 
-  console.log(JSON.stringify(body, null, 2));
+  // console.log(JSON.stringify(body, null, 2));
 
   if (body.object === "page") {
-    console.log("Facebook Message");
+    // console.log("Facebook Message");
     // Facebook handle
   }
 
   if (body.object === "instagram") {
-    console.log("Instagram Message");
+    // console.log("Instagram Message");
     // Instagram handle
   }
 
