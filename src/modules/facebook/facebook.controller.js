@@ -1,5 +1,6 @@
 import * as fbService from './facebook.service.js';
 import { FBConversation, FBMessage } from './facebook.model.js';
+import { getIO } from '../../config/socket.js';
 
 /**
  * 1. SYNC Conversations (Meta to MongoDB)
@@ -183,6 +184,14 @@ export const sendMessage = async (req, res, next) => {
     if (conversationId) {
       await FBConversation.updateOne({ fbConversationId: conversationId }, { $set: { lastMessageAt: new Date() } });
     }
+
+    // Emit to all admin clients so sender sees message instantly
+    try {
+      getIO().emit('fb_new_message', {
+        conversationId: conversationId || `fallback-${recipientId}`,
+        message: savedMessage,
+      });
+    } catch (_) {}
 
     return res.status(201).json({ success: true, data: savedMessage });
   } catch (error) {

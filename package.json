@@ -17,6 +17,7 @@
     "razorpay": "^2.9.6",
     "resend": "^6.12.2",
     "slugify": "^1.6.9",
+    "socket.io": "^4.8.3",
     "stripe": "^22.0.0",
     "winston": "^3.19.0"
   },

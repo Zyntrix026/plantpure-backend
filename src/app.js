@@ -6,6 +6,7 @@ import { stripeWebhook } from "./modules/payments/payment.controller.js";
 import facebookRoutes from './modules/facebook/facebook.routes.js';
 import webhookRoutes from "./modules/webhook/webhook.routes.js";
 import instagramRoutes from "./modules/instagram/instagram.routes.js";
+import respondRoutes from "./modules/instagram/respond.routes.js";
 const app = express();
 
 /* =======================
@@ -103,6 +104,7 @@ app.get("/api/health", (req, res) => {
 
 app.use("/webhook", webhookRoutes);
 app.use("/api/instagram", instagramRoutes);
+app.use("/api/respond", respondRoutes);
 /* =======================
    ROOT
 ======================= */
