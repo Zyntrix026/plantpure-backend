@@ -1,16 +1,14 @@
-import Stripe from "stripe";
+import cashfreeService from "../../utils/cashfree.service.js";
 import { Order } from "../orders/order.model.js";
 import { Cart } from "../cart/cart.model.js";
 import { Product } from "../products/product.model.js";
 import { haversineDistance, calcCartDeliveryFee } from "../../utils/distance.js";
 import { validateCouponService, recordCouponUsageService, rollbackCouponUsageService } from "../coupons/coupon.service.js";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
 const getStoreCoords = () => ({ lat: parseFloat(process.env.STORE_LAT), lng: parseFloat(process.env.STORE_LNG) });
 
-// ─── 0. Create Payment Intent from Cart (Registered + Guest) ─────────────────
-export const createPaymentIntentFromCartService = async (userId, shippingAddress, shippingMethod = "delivery", guestItems = null, couponCode = null) => {
+// ─── 0. Create Cashfree Session from Cart (Registered + Guest) ───────────────
+export const createPaymentIntentFromCartService = async (userId, shippingAddress, shippingMethod = "delivery", guestItems = null, couponCode = null, customerDetails = {}) => {
   let rawItems;
 
   if (userId) {
@@ -46,8 +44,8 @@ export const createPaymentIntentFromCartService = async (userId, shippingAddress
       productId: item.productId,
       variantId: item.variantId || null,
       shipping_category: product.shipping_category ?? "SP",
-      priceAtPurchase: Number((base + vat).toFixed(2)),  // inc-VAT
-      baseExVat: base,                                    // ex-VAT for coupon calc
+      priceAtPurchase: Number((base + vat).toFixed(2)),
+      baseExVat: base,
       quantity: item.quantity,
       categories: product.category || [],
     };
@@ -61,14 +59,12 @@ export const createPaymentIntentFromCartService = async (userId, shippingAddress
     shippingPrice = calcCartDeliveryFee(orderItems, distanceKm);
   }
 
-  // inc-VAT items total
   const itemsTotal = parseFloat(orderItems.reduce((acc, i) => acc + i.priceAtPurchase * i.quantity, 0).toFixed(2));
-  // ex-VAT items total (used as coupon base)
   const itemsTotalExVat = parseFloat(orderItems.reduce((acc, i) => acc + i.baseExVat * i.quantity, 0).toFixed(2));
 
-  // ── Coupon Validation ─────────────────────────────────────────────────────
-  let discountAmountExVat = 0;  // raw discount from coupon service (ex-VAT basis)
-  let discountAmountIncVat = 0; // scaled to inc-VAT for actual deduction
+  // ── Coupon ────────────────────────────────────────────────────────────────
+  let discountAmountExVat = 0;
+  let discountAmountIncVat = 0;
   let isFreeShipping = false;
   let couponData = null;
 
@@ -91,10 +87,8 @@ export const createPaymentIntentFromCartService = async (userId, shippingAddress
     });
 
     discountAmountExVat = couponResult.discountAmount;
-    isFreeShipping      = couponResult.isFreeShipping;
+    isFreeShipping = couponResult.isFreeShipping;
 
-    // Scale ex-VAT discount to inc-VAT proportionally
-    // e.g. ex-VAT total = £60, inc-VAT total = £72, discount ex = £5 → discount inc = £6
     if (discountAmountExVat > 0 && itemsTotalExVat > 0) {
       discountAmountIncVat = parseFloat((discountAmountExVat * (itemsTotal / itemsTotalExVat)).toFixed(2));
     }
@@ -102,136 +96,142 @@ export const createPaymentIntentFromCartService = async (userId, shippingAddress
     if (isFreeShipping) shippingPrice = 0;
 
     couponData = {
-      couponId:       couponResult.coupon._id,
-      code:           couponResult.coupon.code,
-      type:           couponResult.coupon.type,
-      discountAmount: discountAmountIncVat,  // inc-VAT — what customer actually saves
+      couponId: couponResult.coupon._id,
+      code: couponResult.coupon.code,
+      type: couponResult.coupon.type,
+      discountAmount: discountAmountIncVat,
       isFreeShipping,
     };
   }
 
-  // ── Final total ───────────────────────────────────────────────────────────
   const discountedItemsTotal = Math.max(itemsTotal - discountAmountIncVat, 0);
   const totalAmount = parseFloat((discountedItemsTotal + shippingPrice).toFixed(2));
 
-  if (totalAmount < 0.30) {
-    throw Object.assign(new Error(`Order total £${totalAmount.toFixed(2)} is below the minimum charge of £0.30`), { statusCode: 400 });
+  if (totalAmount <= 0) {
+    throw Object.assign(new Error(`Order total ₹${totalAmount.toFixed(2)} is invalid`), { statusCode: 400 });
   }
 
-  const paymentIntent = await stripe.paymentIntents.create({
-    amount: Math.round(totalAmount * 100),
-    currency: "gbp",
-    metadata: {
-      userId:             userId ? userId.toString() : "guest",
+  // ── Create Cashfree Order ─────────────────────────────────────────────────
+  const cfOrderId = `CF_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
+  const cfOrder = await cashfreeService.createOrder({
+    orderId: cfOrderId,
+    amount: totalAmount,
+    userId: userId ? userId.toString() : `guest_${Date.now()}`,
+    customerName: customerDetails.name || shippingAddress?.fullName || "Customer",
+    customerEmail: customerDetails.email || "customer@example.com",
+    customerPhone: customerDetails.phone || shippingAddress?.phone || "9999999999",
+    redirectUrl: `${process.env.FRONTEND_URL || "http://localhost:5174"}/orders/${cfOrderId}?success=true`,
+    orderTags: {
+      userId: userId ? userId.toString() : "guest",
       shippingMethod,
-      isGuest:            userId ? "false" : "true",
-      couponCode:         couponData?.code || "",
-      couponId:           couponData?.couponId?.toString() || "",
-      // Store inc-VAT discount — this is what gets recorded in CouponUsage
-      discountAmount:     discountAmountIncVat.toString(),
-      isFreeShipping:     isFreeShipping ? "true" : "false",
+      isGuest: userId ? "false" : "true",
+      couponCode: couponData?.code || "",
+      couponId: couponData?.couponId?.toString() || "",
+      discountAmount: discountAmountIncVat.toString(),
+      isFreeShipping: isFreeShipping ? "true" : "false",
     },
   });
 
   return {
-    clientSecret:   paymentIntent.client_secret,
-    paymentIntentId: paymentIntent.id,
+    paymentSessionId: cfOrder.payment_session_id,
+    orderId: cfOrder.order_id,
     totalAmount,
     coupon: couponData ? {
-      code:           couponData.code,
-      discountAmount: discountAmountIncVat,  // inc-VAT — matches what Stripe charged
+      code: couponData.code,
+      discountAmount: discountAmountIncVat,
       isFreeShipping,
     } : null,
   };
 };
 
-// ─── 1. Create Payment Intent (legacy — order already exists) ────────────────
+// ─── 1. Create Session for existing order (legacy) ───────────────────────────
 export const createPaymentIntentService = async (orderId, userId) => {
   const order = await Order.findById(orderId);
 
   if (!order) throw Object.assign(new Error("Order not found"), { statusCode: 404 });
   if (order.userId.toString() !== userId.toString()) throw Object.assign(new Error("Access denied"), { statusCode: 403 });
   if (order.paymentStatus === "paid") throw Object.assign(new Error("Order is already paid"), { statusCode: 400 });
-  if (order.paymentMethod !== "Stripe") throw Object.assign(new Error("This order is not a Stripe order"), { statusCode: 400 });
 
-  if (order.paymentIntentId) {
-    const existingIntent = await stripe.paymentIntents.retrieve(order.paymentIntentId);
-    if (existingIntent.status === "canceled") {
-      order.paymentIntentId = null;
-      await order.save();
-    } else {
-      return { clientSecret: existingIntent.client_secret, orderId: order._id };
-    }
-  }
-
-  const paymentIntent = await stripe.paymentIntents.create(
-    {
-      amount: Math.round(order.totalPrice * 100),
-      currency: "gbp",
-      metadata: {
-        orderId:     order._id.toString(),
-        orderNumber: order.orderNumber,
-        userId:      userId.toString(),
-      },
+  const cfOrderId = `CF_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
+  const cfOrder = await cashfreeService.createOrder({
+    orderId: cfOrderId,
+    amount: order.totalPrice,
+    userId: userId.toString(),
+    customerName: order.shippingAddress?.fullName || "Customer",
+    customerEmail: "customer@example.com",
+    customerPhone: order.shippingAddress?.phone || "9999999999",
+    redirectUrl: `${process.env.FRONTEND_URL || "http://localhost:5174"}/orders/${cfOrderId}?success=true`,
+    orderTags: {
+      orderId: order._id.toString(),
+      orderNumber: order.orderNumber,
+      userId: userId.toString(),
     },
-    { idempotencyKey: `order_${order._id}` }
-  );
+  });
 
-  order.paymentIntentId = paymentIntent.id;
+  order.cfOrderId = cfOrder.order_id;
   await order.save();
 
-  return { clientSecret: paymentIntent.client_secret, orderId: order._id };
+  return { paymentSessionId: cfOrder.payment_session_id, orderId: order._id, cfOrderId: cfOrder.order_id };
 };
 
-// ─── 2. Handle Stripe Webhook ─────────────────────────────────────────────────
-export const handleWebhookService = async (rawBody, signature) => {
-  let event;
-  try {
-    event = stripe.webhooks.constructEvent(rawBody, signature, process.env.STRIPE_WEBHOOK_SECRET);
-  } catch {
+// ─── 2. Handle Cashfree Webhook ───────────────────────────────────────────────
+export const handleWebhookService = async (body, signature, timestamp) => {
+  // Cashfree webhook signature verification
+  const crypto = await import("crypto");
+  const rawBody = typeof body === "string" ? body : JSON.stringify(body);
+  const signedPayload = timestamp + rawBody;
+  const expectedSignature = crypto.default
+    .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
+    .update(signedPayload)
+    .digest("base64");
+
+  if (signature !== expectedSignature) {
     throw Object.assign(new Error("Webhook signature verification failed"), { statusCode: 400 });
   }
 
-  if (event.type === "payment_intent.succeeded") {
-    const intent = event.data.object;
-    const orderId = intent.metadata.orderId;
-    const order = await Order.findById(orderId);
+  const event = typeof body === "string" ? JSON.parse(body) : body;
+  const eventType = event.type;
+  const data = event.data;
+
+  if (eventType === "PAYMENT_SUCCESS") {
+    const cfOrderId = data.order?.order_id;
+    const order = await Order.findOne({ cfOrderId });
 
     if (order && order.paymentStatus !== "paid") {
       order.paymentStatus = "paid";
-      order.orderStatus   = "confirmed";
-      order.paymentIntentId = intent.id;
-      order.paymentResult = { gatewayPaymentId: intent.id, paidAt: new Date() };
-      order.statusHistory.push({ status: "confirmed", note: "Payment received via Stripe" });
+      order.orderStatus = "confirmed";
+      order.paymentResult = { gatewayPaymentId: data.payment?.cf_payment_id?.toString(), paidAt: new Date() };
+      order.statusHistory.push({ status: "confirmed", note: "Payment received via Cashfree" });
       await order.save();
 
-      const { couponCode, couponId, discountAmount } = intent.metadata;
+      const tags = data.order?.order_tags || {};
+      const { couponCode, couponId, discountAmount } = tags;
       if (couponCode && couponId && parseFloat(discountAmount) > 0) {
         try {
           await recordCouponUsageService({
             couponId,
             couponCode,
-            userId:         intent.metadata.userId !== "guest" ? intent.metadata.userId : null,
-            orderId:        order._id,
-            guestEmail:     order.guestEmail || null,
+            userId: tags.userId !== "guest" ? tags.userId : null,
+            orderId: order._id,
+            guestEmail: order.guestEmail || null,
             discountAmount: parseFloat(discountAmount),
           });
-        } catch (couponErr) {
-          console.error("Coupon usage recording failed:", couponErr.message);
+        } catch (err) {
+          console.error("Coupon usage recording failed:", err.message);
         }
       }
     }
   }
 
-  if (event.type === "payment_intent.payment_failed") {
-    const intent = event.data.object;
-    const order  = await Order.findOne({ paymentIntentId: intent.id });
-
+  if (eventType === "PAYMENT_FAILED") {
+    const cfOrderId = data.order?.order_id;
+    const order = await Order.findOne({ cfOrderId });
     if (order) {
       order.paymentStatus = "failed";
       await order.save();
 
-      const { couponId, discountAmount } = intent.metadata;
+      const tags = data.order?.order_tags || {};
+      const { couponId, discountAmount } = tags;
       if (couponId && parseFloat(discountAmount) > 0) {
         try {
           await rollbackCouponUsageService({
@@ -239,8 +239,8 @@ export const handleWebhookService = async (rawBody, signature) => {
             discountAmount: parseFloat(discountAmount),
             orderId: order._id,
           });
-        } catch (rollbackErr) {
-          console.error("Coupon rollback failed:", rollbackErr.message);
+        } catch (err) {
+          console.error("Coupon rollback failed:", err.message);
         }
       }
     }
@@ -261,11 +261,11 @@ export const getPaymentStatusService = async (orderId, userId, role) => {
     throw Object.assign(new Error("Access denied"), { statusCode: 403 });
 
   return {
-    orderId:       order._id,
-    orderNumber:   order.orderNumber,
+    orderId: order._id,
+    orderNumber: order.orderNumber,
     paymentMethod: order.paymentMethod,
     paymentStatus: order.paymentStatus,
-    orderStatus:   order.orderStatus,
-    totalPrice:    order.totalPrice,
+    orderStatus: order.orderStatus,
+    totalPrice: order.totalPrice,
   };
 };

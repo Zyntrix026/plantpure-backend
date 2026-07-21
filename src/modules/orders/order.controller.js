@@ -3,6 +3,7 @@ import {
   createOrderAfterPaymentService,
   getMyOrdersService,
   getOrderByIdService,
+  getOrderByCfOrderIdService,
   getAllOrdersService,
   updateOrderStatusService,
   cancelOrderService,
@@ -23,7 +24,7 @@ const ALLOWED_STATUSES = [
   "ready_for_pickup", "picked_up",
   "cancelled",
 ];
-const ALLOWED_PAYMENT_METHODS = ["COD", "Stripe", "Razorpay", "PayPal"];
+const ALLOWED_PAYMENT_METHODS = ["COD", "Stripe", "Razorpay", "PayPal", "Cashfree"];
 
 // ─── POST /orders/create ─────────────────────────────────────────────────────
 export const createOrder = async (req, res) => {
@@ -65,20 +66,63 @@ export const createOrder = async (req, res) => {
 };
 
 // ─── POST /orders/create-after-payment ───────────────────────────────────────
+// export const createOrderAfterPayment = async (req, res) => {
+//   try {
+//     const { paymentIntentId, shippingAddress, shippingMethod = "delivery", guestEmail, items: guestItems } = req.body;
+//     const userId = req.user?.userId ?? null;
+
+//     if (!paymentIntentId || !shippingAddress)
+//       return res.status(400).json({ success: false, message: "paymentIntentId and shippingAddress are required" });
+
+//     const { fullName, phone } = shippingAddress;
+//     if (!fullName || !phone)
+//       return res.status(400).json({ success: false, message: "shippingAddress must include: fullName, phone" });
+
+//     if (shippingMethod === "delivery" && (!shippingAddress.address || !shippingAddress.city || !shippingAddress.postalCode))
+//       return res.status(400).json({ success: false, message: "shippingAddress must include: address, city, postalCode for delivery orders" });
+
+//     if (!userId) {
+//       if (!guestEmail) return res.status(400).json({ success: false, message: "Email is required for guest checkout" });
+//       if (!guestItems || guestItems.length === 0) return res.status(400).json({ success: false, message: "Cart items are required for guest checkout" });
+//     }
+
+//     const guestData = !userId ? { guestEmail, items: guestItems } : null;
+//     const order = await createOrderAfterPaymentService(userId, paymentIntentId, shippingAddress, shippingMethod, guestData);
+
+//     res.status(201).json({
+//       success: true,
+//       message: "Order placed successfully.",
+//       data: {
+//         orderId: order._id,
+//         orderNumber: order.orderNumber,
+//         totalPrice: order.totalPrice,
+//         paymentStatus: order.paymentStatus,
+//         orderStatus: order.orderStatus,
+//       },
+//     });
+//   } catch (error) {
+//     res.status(error.statusCode || 500).json({ success: false, message: error.message });
+//   }
+// };
+
 export const createOrderAfterPayment = async (req, res) => {
   try {
-    const { paymentIntentId, shippingAddress, shippingMethod = "delivery", guestEmail, items: guestItems } = req.body;
+    // paymentIntentId ki jagah cfOrderId accept kar rahe hain
+    const { cfOrderId, shippingAddress, shippingMethod = "delivery", guestEmail, items: guestItems } = req.body;
     const userId = req.user?.userId ?? null;
 
-    if (!paymentIntentId || !shippingAddress)
-      return res.status(400).json({ success: false, message: "paymentIntentId and shippingAddress are required" });
+    if (!cfOrderId || !shippingAddress) {
+      return res.status(400).json({ success: false, message: "cfOrderId and shippingAddress are required" });
+    }
 
     const { fullName, phone } = shippingAddress;
-    if (!fullName || !phone)
+    if (!fullName || !phone) {
       return res.status(400).json({ success: false, message: "shippingAddress must include: fullName, phone" });
+    }
 
-    if (shippingMethod === "delivery" && (!shippingAddress.address || !shippingAddress.city || !shippingAddress.postalCode))
+    if (shippingMethod === "delivery" && (!shippingAddress.address || !shippingAddress.city || !shippingAddress.postalCode)) {
       return res.status(400).json({ success: false, message: "shippingAddress must include: address, city, postalCode for delivery orders" });
+    }
 
     if (!userId) {
       if (!guestEmail) return res.status(400).json({ success: false, message: "Email is required for guest checkout" });
@@ -86,7 +130,9 @@ export const createOrderAfterPayment = async (req, res) => {
     }
 
     const guestData = !userId ? { guestEmail, items: guestItems } : null;
-    const order = await createOrderAfterPaymentService(userId, paymentIntentId, shippingAddress, shippingMethod, guestData);
+    
+    // Service function call
+    const order = await createOrderAfterPaymentService(userId, cfOrderId, shippingAddress, shippingMethod, guestData);
 
     res.status(201).json({
       success: true,
@@ -127,6 +173,16 @@ export const getOrderById = async (req, res) => {
       : error.message === "Invalid order ID" ? 400
       : 500;
     res.status(statusCode).json({ success: false, message: error.message });
+  }
+};
+
+// ─── GET /orders/by-cf/:cfOrderId ────────────────────────────────────────────
+export const getOrderByCfOrderId = async (req, res) => {
+  try {
+    const order = await getOrderByCfOrderIdService(req.params.cfOrderId, req.user?.userId, req.user?.role);
+    res.status(200).json({ success: true, data: order });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message });
   }
 };
 

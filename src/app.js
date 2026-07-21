@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import mongoose from "mongoose";
 import routes from "./routes/index.js";
-import { stripeWebhook } from "./modules/payments/payment.controller.js";
+import { cashfreeWebhook } from "./modules/payments/payment.controller.js";
 import facebookRoutes from './modules/facebook/facebook.routes.js';
 import webhookRoutes from "./modules/webhook/webhook.routes.js";
 import instagramRoutes from "./modules/instagram/instagram.routes.js";
@@ -54,13 +54,9 @@ app.use(cors(corsOptions));
 app.options("/{*path}", cors(corsOptions));
 
 /* =======================
-   STRIPE WEBHOOK (before JSON)
+   CASHFREE WEBHOOK
 ======================= */
-app.post(
-  "/api/payments/webhook",
-  express.raw({ type: "application/json" }),
-  stripeWebhook
-);
+app.post("/api/payments/webhook", express.json(), cashfreeWebhook);
 
 /* =======================
    BODY PARSER
