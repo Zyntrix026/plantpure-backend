@@ -1,9 +1,13 @@
 // ─── Delivery Fee Config (easy to extend) ────────────────────────────────────
 
 const DELIVERY_RULES = {
-  SP: { withinRange: 10, outsideRange: 10 },
-  BB: { withinRange: 15, outsideRange: 50 },
+  SP: { withinRange: 1, outsideRange: 1 },
+  BB: { withinRange: 1, outsideRange: 1 },
 };
+// const DELIVERY_RULES = {
+//   SP: { withinRange: 10, outsideRange: 10 },
+//   BB: { withinRange: 15, outsideRange: 50 },
+// };
 
 // Runtime getters — dotenv is guaranteed to be loaded by the time these are called
 const getStoreCoords = () => ({ lat: parseFloat(process.env.STORE_LAT), lng: parseFloat(process.env.STORE_LNG) });
