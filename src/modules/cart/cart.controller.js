@@ -6,7 +6,6 @@ import { Product } from "../products/product.model.js";
 // Variant product → "productId_variantId"
 const itemKey = (productId, variantId) =>
   variantId ? `${productId}_${variantId}` : `${productId}`;
-
 const sameItem = (cartItem, productId, variantId) => {
   const pMatch = cartItem.productId.toString() === productId.toString();
   if (!variantId) return pMatch && !cartItem.variantId;

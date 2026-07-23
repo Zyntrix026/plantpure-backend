@@ -11,7 +11,7 @@ export const createAdmin = async () => {
     const adminData = {
       name: "Admin Plantpure",
       email: "admin@plantpure.com",
-      password: "PlantPure@NextJS2026",
+      password: "PlantPure@RUSTJS2025",
       role: "admin",
     };
 
