@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { Order } from "./order.model.js";
 import { Cart } from "../cart/cart.model.js";
 import { Product } from "../products/product.model.js";
+import { createDelhiveryShipment } from "../../utils/delhivery.service.js";
 import User from "../users/user.model.js";
 import { checkAndNotifyStockOut, checkAndRefillStock } from "../../utils/autoStockRefill.js";
 import {
@@ -887,7 +888,7 @@ export const getOrderStatsService = async () => {
 
 export const createOrderAfterPaymentService = async (userId, cfOrderId, shippingAddress, shippingMethod = "delivery", guestData = null) => {
   
-  // 1. Verify payment with Cashfree (Stripe replace hua)
+  // 1. Verify payment with Cashfree
   const cashfreeOrder = await cashfreeService.getOrderDetails(cfOrderId);
   
   if (!cashfreeOrder || cashfreeOrder.order_status !== "PAID") {
@@ -897,13 +898,13 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
     );
   }
 
-  // 2. Idempotency Check (Duplicate orders se bachne ke liye)
+  // 2. Idempotency Check
   const existing = await Order.findOne({ cfOrderId });
   if (existing) return existing;
 
   const isGuest = !userId;
 
-  // 3. Get raw items — registered: cart DB, guest: guestData.items
+  // 3. Get raw items
   let rawItems;
   if (!isGuest) {
     const cart = await Cart.findOne({ userId });
@@ -930,7 +931,7 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
     if (product.status !== "Active") { stockErrors.push(`"${product.title}" is no longer available`); continue; }
     let availableStock;
     if (product.hasVariants && item.variantId) {
-      const variant = product.variants.find((v) => v._id.toString() === item.variantId.toString());
+      const variant = product.variants?.find((v) => v._id.toString() === item.variantId.toString());
       if (!variant) { stockErrors.push(`Variant not found for "${item.name}"`); continue; }
       availableStock = variant.stock;
     } else {
@@ -947,11 +948,11 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
     const product = productMap[item.productId.toString()];
     let base, sku;
     if (product.hasVariants && item.variantId) {
-      const variant = product.variants.find((v) => v._id.toString() === item.variantId.toString());
-      base = variant.discountPrice ?? variant.price;
-      sku = variant.sku || product.sku;
+      const variant = product.variants?.find((v) => v._id.toString() === item.variantId.toString());
+      base = variant?.discountPrice ?? variant?.price ?? 0;
+      sku = variant?.sku || product.sku;
     } else {
-      base = product.discountPrice ?? product.basePrice;
+      base = product.discountPrice ?? product.basePrice ?? 0;
       sku = product.sku;
     }
     const vat = product.vatPercentage ? (base * product.vatPercentage) / 100 : 0;
@@ -968,22 +969,29 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
     };
   });
 
-  // 6. Calculate shipping
+  // 6. Calculate shipping (SAFE LAT/LNG CHECK)
   let shippingPrice = 0;
   if (shippingMethod === "delivery") {
-    if (shippingAddress.lat == null || shippingAddress.lng == null) {
-      throw Object.assign(new Error("lat and lng are required for delivery orders"), { statusCode: 400 });
+    try {
+      if (shippingAddress?.lat == null || shippingAddress?.lng == null) {
+        throw Object.assign(new Error("lat and lng are required for delivery orders"), { statusCode: 400 });
+      }
+      const { lat: STORE_LAT, lng: STORE_LNG } = getStoreCoords();
+      const distanceKm = haversineDistance(STORE_LAT, STORE_LNG, Number(shippingAddress.lat), Number(shippingAddress.lng));
+      validateDeliveryRange(Number(shippingAddress.lat), Number(shippingAddress.lng));
+      shippingPrice = calcCartDeliveryFee(orderItems, distanceKm);
+    } catch (shippingErr) {
+      console.warn("⚠️ Distance calculation warning, falling back to default fee:", shippingErr.message);
+      // Agar Distance Calc fail ho, to code crash na ho, 0 ya default shipping fee set ho:
+      if (shippingErr.statusCode === 400) throw shippingErr;
+      shippingPrice = 0; 
     }
-    const { lat: STORE_LAT, lng: STORE_LNG } = getStoreCoords();
-    const distanceKm = haversineDistance(STORE_LAT, STORE_LNG, shippingAddress.lat, shippingAddress.lng);
-    validateDeliveryRange(shippingAddress.lat, shippingAddress.lng);
-    shippingPrice = calcCartDeliveryFee(orderItems, distanceKm);
   }
 
   const { itemsPrice, taxPrice, totalPrice } = calcPrices(orderItems, shippingPrice);
 
-  // Extract coupon data from Cashfree order_tags (Kyunki Cashfree metadata ko order_tags object me bhejta hai)
-  const tags = cashfreeOrder.order_tags || {};
+  // Extract coupon data
+  const tags = cashfreeOrder?.order_tags || {};
   const couponMeta = tags.couponCode
     ? {
         code: tags.couponCode || null,
@@ -994,7 +1002,6 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
       }
     : null;
 
-  // Apply coupon discount to totalPrice
   const couponDiscount = couponMeta?.discountAmount || 0;
   const finalTotalPrice = parseFloat(Math.max(totalPrice - couponDiscount, 0).toFixed(2));
 
@@ -1006,8 +1013,8 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
     shippingMethod,
     paymentMethod: "Cashfree",
     paymentStatus: "paid",
-    orderStatus: "pending",
-    cfOrderId, // paymentIntentId ki jagah cfOrderId save ho raha hai
+    orderStatus: "processing", 
+    cfOrderId,
     paymentResult: { gatewayPaymentId: cfOrderId, paidAt: new Date() },
     itemsPrice,
     shippingPrice,
@@ -1023,10 +1030,37 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
       : { code: null, couponId: null, discountAmount: 0, isFreeShipping: false },
     statusHistory: [
       { status: "pending", note: "Order placed via Cashfree" },
+      { status: "processing", note: "Payment verified, order is processing" },
     ],
   });
 
-  // 8. Record coupon usage atomically
+  // 7b. Delhivery Integration Call (SAFE EXECUTION)
+  if (shippingMethod === "delivery") {
+    try {
+      if (typeof createDelhiveryShipment === 'function') {
+        const delhiveryRes = await createDelhiveryShipment(order);
+        console.log("👉 Delhivery Response:", JSON.stringify(delhiveryRes, null, 2));
+
+        const waybill = delhiveryRes?.waybill || delhiveryRes?.packages?.[0]?.waybill;
+
+        if (delhiveryRes?.success || waybill) {
+          order.trackingDetails = {
+            trackingNumber: waybill,
+            courierName: delhiveryRes.courierName || "Delhivery",
+            trackingUrl: delhiveryRes.trackingUrl || `https://www.delhivery.com/track/package/${waybill}`,
+            shippedAt: new Date(),
+          };
+          await order.save();
+        }
+      } else {
+        console.warn("⚠️ createDelhiveryShipment function is not imported/defined.");
+      }
+    } catch (delhiveryError) {
+      console.error("❌ Delhivery API Exception:", delhiveryError.message);
+    }
+  }
+
+  // 8. Record coupon usage
   if (couponMeta?.couponId && couponMeta?.code) {
     try {
       await recordCouponUsageService({
@@ -1042,35 +1076,42 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
     }
   }
 
-  // 9. Deduct stock — variant or simple
-  await Product.bulkWrite(
-    rawItems.map((item) => {
-      if (item.variantId) {
+  // 9. Deduct stock
+  try {
+    await Product.bulkWrite(
+      rawItems.map((item) => {
+        if (item.variantId) {
+          return {
+            updateOne: {
+              filter: { _id: item.productId, "variants._id": item.variantId },
+              update: { $inc: { "variants.$.stock": -item.quantity } },
+            },
+          };
+        }
         return {
           updateOne: {
-            filter: { _id: item.productId, "variants._id": item.variantId },
-            update: { $inc: { "variants.$.stock": -item.quantity } },
+            filter: { _id: item.productId },
+            update: { $inc: { stock: -item.quantity } },
           },
         };
-      }
-      return {
-        updateOne: {
-          filter: { _id: item.productId },
-          update: { $inc: { stock: -item.quantity } },
-        },
-      };
-    }),
-  );
+      }),
+    );
+  } catch (stockErr) {
+    console.error("Stock update error:", stockErr.message);
+  }
 
-  // 10. Clear cart (only registered users)
+  // 10. Clear cart
   if (!isGuest) {
     await Cart.findOneAndUpdate({ userId }, { $set: { items: [], totalPrice: 0, totalSavings: 0 } });
   }
 
-  // 10b. Auto-refill stock if any item reached 0
-  await checkAndNotifyStockOut(order.orderItems);
+  // 11. Auto-refill stock & Emails
+  try {
+    if (typeof checkAndNotifyStockOut === 'function') {
+      await checkAndNotifyStockOut(order.orderItems);
+    }
+  } catch (e) { console.error("Stock notify err:", e.message); }
 
-  // 11. Send emails
   try {
     let emailTo, nameTo;
     if (isGuest) {
@@ -1082,7 +1123,7 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
       nameTo = user?.name;
     }
     if (emailTo) {
-      await Promise.all([
+      await Promise.allSettled([
         sendOrderConfirmationToUser(emailTo, nameTo, order),
         sendNewOrderAlertToAdmin(emailTo, nameTo, order),
       ]);
@@ -1093,6 +1134,206 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
 
   return order;
 };
+// export const createOrderAfterPaymentService = async (userId, cfOrderId, shippingAddress, shippingMethod = "delivery", guestData = null) => {
+  
+//   // 1. Verify payment with Cashfree (COMMENTED FOR TESTING)
+//   /*
+//   const cashfreeOrder = await cashfreeService.getOrderDetails(cfOrderId);
+  
+//   if (!cashfreeOrder || cashfreeOrder.order_status !== "PAID") {
+//     throw Object.assign(
+//       new Error("Payment not completed. Please complete payment via Cashfree first."), 
+//       { statusCode: 400 }
+//     );
+//   }
+//   */
+
+//   // 2. Idempotency Check
+//   const existing = await Order.findOne({ cfOrderId });
+//   if (existing) return existing;
+
+//   const isGuest = !userId;
+
+//   // 3. Get raw items
+//   let rawItems;
+//   if (!isGuest) {
+//     const cart = await Cart.findOne({ userId });
+//     if (!cart || cart.items.length === 0) throw new Error("Your cart is empty");
+//     rawItems = cart.items;
+//   } else {
+//     if (!guestData?.items || guestData.items.length === 0) throw new Error("Cart items are required");
+//     if (!guestData?.guestEmail) throw Object.assign(new Error("Email is required for guest checkout"), { statusCode: 400 });
+//     rawItems = guestData.items;
+//   }
+
+//   const productIds = rawItems.map((i) => i.productId);
+//   const products = await Product.find({ _id: { $in: productIds } }).select(
+//     "title sku stock status images basePrice vatPercentage shipping_category hasVariants variants",
+//   );
+//   const productMap = {};
+//   products.forEach((p) => (productMap[p._id.toString()] = p));
+
+//   // 4. Validate stock
+//   const stockErrors = [];
+//   for (const item of rawItems) {
+//     const product = productMap[item.productId.toString()];
+//     if (!product) { stockErrors.push(`Product "${item.name}" no longer exists`); continue; }
+//     if (product.status !== "Active") { stockErrors.push(`"${product.title}" is no longer available`); continue; }
+//     let availableStock;
+//     if (product.hasVariants && item.variantId) {
+//       const variant = product.variants.find((v) => v._id.toString() === item.variantId.toString());
+//       if (!variant) { stockErrors.push(`Variant not found for "${item.name}"`); continue; }
+//       availableStock = variant.stock;
+//     } else {
+//       availableStock = product.stock;
+//     }
+//     if (availableStock < item.quantity) {
+//       stockErrors.push(`${item.name} has only ${availableStock} unit(s) in stock (requested: ${item.quantity})`);
+//     }
+//   }
+//   if (stockErrors.length > 0) throw new Error(stockErrors.join(" | "));
+
+//   // 5. Build order items
+//   const orderItems = rawItems.map((item) => {
+//     const product = productMap[item.productId.toString()];
+//     let base, sku;
+//     if (product.hasVariants && item.variantId) {
+//       const variant = product.variants.find((v) => v._id.toString() === item.variantId.toString());
+//       base = variant.discountPrice ?? variant.price;
+//       sku = variant.sku || product.sku;
+//     } else {
+//       base = product.discountPrice ?? product.basePrice;
+//       sku = product.sku;
+//     }
+//     const vat = product.vatPercentage ? (base * product.vatPercentage) / 100 : 0;
+//     return {
+//       productId: item.productId,
+//       variantId: (product.hasVariants && item.variantId) ? item.variantId : null,
+//       name: item.name,
+//       sku,
+//       quantity: item.quantity,
+//       image: product.images?.[0]?.url || "",
+//       vatPercentage: product.vatPercentage ?? 0,
+//       shipping_category: product.shipping_category ?? "SP",
+//       priceAtPurchase: Number((base + vat).toFixed(2)),
+//     };
+//   });
+
+//   // 6. Calculate shipping
+//   let shippingPrice = 0;
+//   if (shippingMethod === "delivery") {
+//     if (shippingAddress.lat == null || shippingAddress.lng == null) {
+//       throw Object.assign(new Error("lat and lng are required for delivery orders"), { statusCode: 400 });
+//     }
+//     const { lat: STORE_LAT, lng: STORE_LNG } = getStoreCoords();
+//     const distanceKm = haversineDistance(STORE_LAT, STORE_LNG, shippingAddress.lat, shippingAddress.lng);
+//     validateDeliveryRange(shippingAddress.lat, shippingAddress.lng);
+//     shippingPrice = calcCartDeliveryFee(orderItems, distanceKm);
+//   }
+
+//   const { itemsPrice, taxPrice, totalPrice } = calcPrices(orderItems, shippingPrice);
+
+//   // Safe Coupon Handling for Test Mode
+//   const couponDiscount = 0;
+//   const finalTotalPrice = parseFloat(Math.max(totalPrice - couponDiscount, 0).toFixed(2));
+
+//   // 7. Create order in MongoDB (UPDATED WITH FIXES)
+//   const order = await Order.create({
+//     ...(isGuest ? { isGuest: true, guestEmail: guestData.guestEmail } : { userId }),
+//     orderItems,
+//     shippingAddress,
+//     shippingMethod,
+//     paymentMethod: "Cashfree",
+//     paymentStatus: "paid",
+//     orderStatus: "processing", // ✅ Default status set to 'processing'
+//     cfOrderId,
+//     paymentResult: { gatewayPaymentId: cfOrderId, paidAt: new Date() },
+//     itemsPrice,
+//     shippingPrice,
+//     taxPrice,
+//     totalPrice: finalTotalPrice,
+//     coupon: { code: null, couponId: null, discountAmount: 0, isFreeShipping: false },
+//     statusHistory: [
+//       { status: "pending", note: "Order placed via Test Mode" },
+//       { status: "processing", note: "Payment verified, order processing" },
+//     ],
+//   });
+
+//   // Delhivery Integration Call (UPDATED WITH SAFE LOGIC)
+//   if (shippingMethod === "delivery") {
+//     try {
+//       const delhiveryRes = await createDelhiveryShipment(order);
+//       console.log("👉 Delhivery Response:", JSON.stringify(delhiveryRes, null, 2));
+
+//       const waybill = delhiveryRes?.waybill || delhiveryRes?.packages?.[0]?.waybill;
+
+//       if (delhiveryRes?.success || waybill) {
+//         order.trackingDetails = {
+//           trackingNumber: waybill,
+//           courierName: delhiveryRes.courierName || "Delhivery",
+//           trackingUrl: delhiveryRes.trackingUrl || `https://www.delhivery.com/track/package/${waybill}`,
+//           shippedAt: new Date(),
+//         };
+//         await order.save();
+//       } else {
+//         console.warn("⚠️ Delhivery AWB failed, but order created as Processing:", delhiveryRes?.rmk || delhiveryRes);
+//       }
+//     } catch (delhiveryError) {
+//       console.error("❌ Delhivery API Exception:", delhiveryError.message);
+//     }
+//   }
+
+//   // 8. Deduct stock
+//   await Product.bulkWrite(
+//     rawItems.map((item) => {
+//       if (item.variantId) {
+//         return {
+//           updateOne: {
+//             filter: { _id: item.productId, "variants._id": item.variantId },
+//             update: { $inc: { "variants.$.stock": -item.quantity } },
+//           },
+//         };
+//       }
+//       return {
+//         updateOne: {
+//           filter: { _id: item.productId },
+//           update: { $inc: { stock: -item.quantity } },
+//         },
+//       };
+//     }),
+//   );
+
+//   // 9. Clear cart
+//   if (!isGuest) {
+//     await Cart.findOneAndUpdate({ userId }, { $set: { items: [], totalPrice: 0, totalSavings: 0 } });
+//   }
+
+//   // 10. Auto-refill stock check
+//   await checkAndNotifyStockOut(order.orderItems);
+
+//   // 11. Send emails
+//   try {
+//     let emailTo, nameTo;
+//     if (isGuest) {
+//       emailTo = guestData.guestEmail;
+//       nameTo = shippingAddress.fullName;
+//     } else {
+//       const user = await User.findById(userId).select("email name").lean();
+//       emailTo = user?.email;
+//       nameTo = user?.name;
+//     }
+//     if (emailTo) {
+//       await Promise.all([
+//         sendOrderConfirmationToUser(emailTo, nameTo, order),
+//         sendNewOrderAlertToAdmin(emailTo, nameTo, order),
+//       ]);
+//     }
+//   } catch (emailErr) {
+//     console.error("Email sending failed:", emailErr.message);
+//   }
+
+//   return order;
+// };
 
 export const checkDeliveryAvailabilityService = (lat, lng) => {
   const { lat: STORE_LAT, lng: STORE_LNG } = getStoreCoords();

@@ -16,6 +16,7 @@ export const createPaymentSession = async (req, res) => {
     const customerDetails = req.user
       ? { name: req.user.name, email: req.user.email, phone: req.user.phone }
       : {};
+      
 
     const data = await createPaymentIntentFromCartService(userId, shippingAddress, shippingMethod, null, couponCode, customerDetails);
     res.status(200).json({ success: true, data });
