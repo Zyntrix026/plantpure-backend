@@ -18,14 +18,11 @@ export const getContacts = async (req, res) => {
 export const getMessages = async (req, res) => {
     try {
 
-        console.log("Contact ID:", req.params.contactId);
 
         const data = await instagramService.getMessages(
             req.params.contactId
         );
 
-        console.log("Respond.io Response:");
-        console.log(JSON.stringify(data, null, 2));
 
         res.json(data);
 

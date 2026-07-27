@@ -13,7 +13,6 @@ export const sendMessage = async (req, res) => {
     return res.status(200).json({ success: true, data });
   } catch (error) {
     // console.error("Message Error:", error.response?.data || error.message);
-    console.log("Meta API Response:", JSON.stringify(error.response?.data, null, 2));
     return res.status(500).json({ 
       success: false, 
       message: error.response?.data?.error?.message || "Failed" 

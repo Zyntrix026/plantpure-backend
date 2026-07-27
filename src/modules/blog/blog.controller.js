@@ -232,12 +232,10 @@ export const getPublishedBlogs = async (req, res) => {
 export const getArticlesByCategory = async (req, res) => {
   try {
     const { slug } = req.params;
-    console.log("slug",slug)
     const { page = 1, limit = 10, sortBy = "latest" } = req.query;
 
     const Category = (await import("../categories/category.model.js")).default;
     const category = await Category.findOne({ slug });
-    console.log("category",category)
     if (!category) {
       return res
         .status(404)

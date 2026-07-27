@@ -1,4 +1,4 @@
-import CashfreeService from '../../utils/cashfree.service.js'; // 👈 Path check kar lena aapke folder structure ke hisab se
+import cashfreeService from "../../utils/cashfree.service.js";
 import { Order } from "../orders/order.model.js";
 import { Cart } from "../cart/cart.model.js";
 import { Product } from "../products/product.model.js";
@@ -8,67 +8,139 @@ import { validateCouponService, recordCouponUsageService, rollbackCouponUsageSer
 const getStoreCoords = () => ({ lat: parseFloat(process.env.STORE_LAT), lng: parseFloat(process.env.STORE_LNG) });
 
 // ─── 0. Create Cashfree Session from Cart (Registered + Guest) ───────────────
-// backend/services/paymentService.js (ya jahan createPaymentIntentFromCartService define hai)
+export const createPaymentIntentFromCartService = async (userId, shippingAddress, shippingMethod = "delivery", guestItems = null, couponCode = null, customerDetails = {}) => {
+  let rawItems;
 
-export const createPaymentIntentFromCartService = async (
-  userId,
-  shippingAddress,
-  shippingMethod = "delivery",
-  orderIdParam = null,
-  couponCode = null,
-  customerDetails = {}
-) => {
-  // 1. Fetch User Cart or Guest Cart
-  const cart = await Cart.findOne({ user: userId }).populate('items.product');
-  if (!cart || cart.items.length === 0) {
-    throw new Error("Cart is empty. Cannot initiate payment.");
+  if (userId) {
+    const cart = await Cart.findOne({ userId });
+    if (!cart || cart.items.length === 0) throw Object.assign(new Error("Your cart is empty"), { statusCode: 400 });
+    rawItems = cart.items;
+  } else {
+    if (!guestItems || guestItems.length === 0) throw Object.assign(new Error("Cart items are required for guest checkout"), { statusCode: 400 });
+    rawItems = guestItems;
   }
 
-  // 2. Calculate Total Amount from Cart
-  let calculatedTotal = cart.items.reduce((sum, item) => {
-    const price = item.product?.price || item.price || 0;
-    return sum + (price * item.quantity);
-  }, 0);
+  const productIds = rawItems.map((i) => i.productId);
+  const products = await Product.find({ _id: { $in: productIds } }).select("basePrice discountPrice vatPercentage shipping_category status hasVariants variants category");
+  const productMap = {};
+  products.forEach((p) => (productMap[p._id.toString()] = p));
 
-  // Apply Shipping Charge if needed
-  if (shippingMethod === "delivery") {
-    const shippingCharge = 50; // Ya jo aapka shipping cost ho
-    calculatedTotal += shippingCharge;
+  const orderItems = rawItems.map((item) => {
+    const product = productMap[item.productId.toString()];
+    if (!product) throw Object.assign(new Error("Product not found"), { statusCode: 400 });
+    if (product.status !== "Active") throw Object.assign(new Error("A product in your cart is no longer available"), { statusCode: 400 });
+
+    let base;
+    if (product.hasVariants && item.variantId) {
+      const variant = product.variants?.find((v) => v._id.toString() === item.variantId.toString());
+      if (!variant) throw Object.assign(new Error("Variant not found for product"), { statusCode: 400 });
+      base = variant.discountPrice || variant.price || 0;
+    } else {
+      base = product.discountPrice || product.basePrice || 0;
+    }
+
+    const vat = product.vatPercentage ? (base * product.vatPercentage) / 100 : 0;
+    return {
+      productId: item.productId,
+      variantId: item.variantId || null,
+      shipping_category: product.shipping_category ?? "SP",
+      priceAtPurchase: Number((base + vat).toFixed(2)),
+      baseExVat: base,
+      quantity: item.quantity,
+      categories: product.category || [],
+    };
+  });
+
+  // ── Shipping ──────────────────────────────────────────────────────────────
+  let shippingPrice = 0;
+  if (shippingMethod === "delivery" && shippingAddress?.lat != null && shippingAddress?.lng != null) {
+    const { lat: STORE_LAT, lng: STORE_LNG } = getStoreCoords();
+    const distanceKm = haversineDistance(STORE_LAT, STORE_LNG, shippingAddress.lat, shippingAddress.lng);
+    shippingPrice = calcCartDeliveryFee(orderItems, distanceKm);
   }
 
-  // Final Total Amount
-  const totalAmount = Number(calculatedTotal.toFixed(2));
+  const itemsTotal = parseFloat(orderItems.reduce((acc, i) => acc + i.priceAtPurchase * i.quantity, 0).toFixed(2));
+  const itemsTotalExVat = parseFloat(orderItems.reduce((acc, i) => acc + i.baseExVat * i.quantity, 0).toFixed(2));
 
-  // 3. Clean Customer Details
-  const customerName = shippingAddress?.fullName || customerDetails?.name || "Customer";
-  const customerEmail = shippingAddress?.email || customerDetails?.email || "customer@example.com";
-  const customerPhone = shippingAddress?.phone || customerDetails?.phone || "9999999999";
+  // ── Coupon ────────────────────────────────────────────────────────────────
+  let discountAmountExVat = 0;
+  let discountAmountIncVat = 0;
+  let isFreeShipping = false;
+  let couponData = null;
 
-  // 4. Order ID Generation
-  const cfOrderId = orderIdParam || `CF_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
+  if (couponCode) {
+    const isGuest = !userId;
+    const cartItemsForValidation = orderItems.map((i) => ({
+      productId: i.productId,
+      basePrice: i.baseExVat,
+      discountPrice: null,
+      quantity: i.quantity,
+      categories: i.categories,
+    }));
 
-  // 5. Cashfree Localhost Placeholder Fix
-  const redirectUrl = "http://localhost:5174/orders/{order_id}?success=true";
+    const couponResult = await validateCouponService({
+      code: couponCode,
+      userId,
+      cartItems: cartItemsForValidation,
+      cartTotal: itemsTotalExVat,
+      isGuest,
+    });
 
-  // 6. Call Cashfree Service
-  const cashfreeResponse = await CashfreeService.createOrder({
-    amount: totalAmount, // ✅ Ab totalAmount properly calculated hai!
-    userId: userId || `GUEST_${Date.now()}`,
-    customerName,
-    customerEmail,
-    customerPhone,
+    discountAmountExVat = couponResult.discountAmount;
+    isFreeShipping = couponResult.isFreeShipping;
+
+    if (discountAmountExVat > 0 && itemsTotalExVat > 0) {
+      discountAmountIncVat = parseFloat((discountAmountExVat * (itemsTotal / itemsTotalExVat)).toFixed(2));
+    }
+
+    if (isFreeShipping) shippingPrice = 0;
+
+    couponData = {
+      couponId: couponResult.coupon._id,
+      code: couponResult.coupon.code,
+      type: couponResult.coupon.type,
+      discountAmount: discountAmountIncVat,
+      isFreeShipping,
+    };
+  }
+
+  const discountedItemsTotal = Math.max(itemsTotal - discountAmountIncVat, 0);
+  const totalAmount = parseFloat((discountedItemsTotal + shippingPrice).toFixed(2));
+
+  if (totalAmount <= 0) {
+    throw Object.assign(new Error(`Order total ₹${totalAmount.toFixed(2)} is invalid`), { statusCode: 400 });
+  }
+
+  // ── Create Cashfree Order ─────────────────────────────────────────────────
+  const cfOrderId = `CF_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
+  const cfOrder = await cashfreeService.createOrder({
     orderId: cfOrderId,
-    redirectUrl: redirectUrl,
+    amount: totalAmount,
+    userId: userId ? userId.toString() : `guest_${Date.now()}`,
+    customerName: customerDetails.name || shippingAddress?.fullName || "Customer",
+    customerEmail: customerDetails.email || "customer@example.com",
+    customerPhone: customerDetails.phone || shippingAddress?.phone || "9999999999",
+    redirectUrl: `${process.env.FRONTEND_URL || "http://localhost:5173"}/orders/${cfOrderId}?success=true`,
     orderTags: {
-      userId: userId ? String(userId) : "guest",
+      userId: userId ? userId.toString() : "guest",
       shippingMethod,
-      couponCode: couponCode || "",
+      isGuest: userId ? "false" : "true",
+      couponCode: couponData?.code || "",
+      couponId: couponData?.couponId?.toString() || "",
+      discountAmount: discountAmountIncVat.toString(),
+      isFreeShipping: isFreeShipping ? "true" : "false",
     },
   });
 
   return {
-    paymentSessionId: cashfreeResponse.payment_session_id,
-    orderId: cashfreeResponse.order_id,
+    paymentSessionId: cfOrder.payment_session_id,
+    orderId: cfOrder.order_id,
+    totalAmount,
+    coupon: couponData ? {
+      code: couponData.code,
+      discountAmount: discountAmountIncVat,
+      isFreeShipping,
+    } : null,
   };
 };
 
@@ -88,7 +160,7 @@ export const createPaymentIntentService = async (orderId, userId) => {
     customerName: order.shippingAddress?.fullName || "Customer",
     customerEmail: "customer@example.com",
     customerPhone: order.shippingAddress?.phone || "9999999999",
-    redirectUrl: `${process.env.FRONTEND_URL || "http://localhost:5174"}/orders/${cfOrderId}?success=true`,
+    redirectUrl: `${process.env.FRONTEND_URL || "http://localhost:5173"}/orders/${cfOrderId}?success=true`,
     orderTags: {
       orderId: order._id.toString(),
       orderNumber: order.orderNumber,

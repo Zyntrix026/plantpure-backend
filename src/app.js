@@ -62,7 +62,7 @@ app.post("/api/payments/webhook", express.json(), cashfreeWebhook);
    BODY PARSER
 ======================= */
 app.use((req, res, next) => {
-  console.log("➡️", req.method, req.originalUrl);
+  // console.log("➡️", req.method, req.originalUrl);
   next();
 });
 app.use(express.json());

@@ -10,10 +10,8 @@ export const syncConversations = async (req, res, next) => {
   const pageId = process.env.FB_PAGE_ID;
 
   try {
-    console.log(`[FB-CRM-SYNC] Fetching conversations via ENV configs...`);
     const { data: fbConversations, nextCursor } = await fbService.fetchConversationsFromMeta(cursor);
 
-    console.log(`[FB-CRM-SYNC] Meta returned ${fbConversations.length} conversation threads.`);
 
     const bulkOps = fbConversations.map((conv) => {
       const finalConvId = conv.id; 
@@ -36,7 +34,6 @@ export const syncConversations = async (req, res, next) => {
 
     if (bulkOps.length > 0) {
       const result = await FBConversation.bulkWrite(bulkOps);
-      console.log(`[FB-CRM-SYNC] Upserted rows inside MongoDB: ${result.upsertedCount || result.modifiedCount}`);
     }
 
     return res.status(200).json({ 
@@ -59,7 +56,6 @@ export const syncMessages = async (req, res, next) => {
   const { cursor } = req.query;
 
   try {
-    console.log(`[FB-CRM-SYNC] Extracting messages for Target Thread ID: ${conversationId}`);
     const { data: fbMessages, nextCursor } = await fbService.fetchMessagesFromMeta(conversationId, cursor);
 
     const bulkOps = fbMessages.map((msg) => {
@@ -87,7 +83,6 @@ export const syncMessages = async (req, res, next) => {
 
     if (bulkOps.length > 0) {
       await FBMessage.bulkWrite(bulkOps);
-      console.log(`[FB-CRM-SYNC] Successfully synced ${bulkOps.length} messages inside DB.`);
     }
 
     await FBConversation.updateOne({ fbConversationId: conversationId }, { $set: { nextPageToken: nextCursor } });
@@ -168,7 +163,6 @@ export const sendMessage = async (req, res, next) => {
   }
 
   try {
-    console.log(`[FB-CRM-OUTBOUND] Sending response to recipient: ${recipientId}`);
     const metaResponse = await fbService.sendMessageToMeta(recipientId, messageText);
 
     const savedMessage = await FBMessage.create({

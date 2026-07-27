@@ -5,9 +5,8 @@ import { MONGO_URI } from "../config/env.js";
 export const createAdmin = async () => {
   try {
     await mongoose.connect(MONGO_URI);
-    console.log("✅ Database connected");
+    // console.log("✅ Database connected");
 
-    // Naya Admin Data
     const adminData = {
       name: "Admin Plantpure",
       email: "admin@plantpure.com",

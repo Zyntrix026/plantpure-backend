@@ -5,7 +5,7 @@ try {
     "_mongodb._tcp.cluster0.9rqcx3f.mongodb.net"
   );
  
-  console.log(records);
+  // console.log(records);
 } catch (err) {
   console.error(err);
 }
