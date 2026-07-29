@@ -1,8 +1,8 @@
 // ─── Delivery Fee Config (easy to extend) ────────────────────────────────────
 
 const DELIVERY_RULES = {
-  SP: { withinRange: 1, outsideRange: 1 },
-  BB: { withinRange: 1, outsideRange: 1 },
+  SP: { withinRange: 100, outsideRange: 150 },
+  BB: { withinRange: 100, outsideRange: 150 },
 };
 // const DELIVERY_RULES = {
 //   SP: { withinRange: 10, outsideRange: 10 },

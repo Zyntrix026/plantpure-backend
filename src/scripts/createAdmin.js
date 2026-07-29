@@ -8,8 +8,8 @@ export const createAdmin = async () => {
     // console.log("✅ Database connected");
 
     const adminData = {
-      name: "Admin Plantpure",
-      email: "admin@plantpure.com",
+      name: "Zakwan Saifi",
+      email: "zakwanab12@gmail.com",
       password: "PlantPure@RUSTJS2025",
       role: "admin",
     };
