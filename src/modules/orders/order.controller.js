@@ -107,12 +107,15 @@ export const createOrder = async (req, res) => {
 
 export const createOrderAfterPayment = async (req, res) => {
   try {
-    // paymentIntentId ki jagah cfOrderId accept kar rahe hain
-    const { cfOrderId, shippingAddress, shippingMethod = "delivery", guestEmail, items: guestItems } = req.body;
+    const { cfOrderId, shippingAddress, shippingMethod = "delivery", guestEmail, items: guestItems, paymentMethod = "Cashfree" } = req.body;
     const userId = req.user?.userId ?? null;
+    const isCOD = paymentMethod === "COD";
 
-    if (!cfOrderId || !shippingAddress) {
-      return res.status(400).json({ success: false, message: "cfOrderId and shippingAddress are required" });
+    if (!isCOD && !cfOrderId) {
+      return res.status(400).json({ success: false, message: "cfOrderId is required for online payment" });
+    }
+    if (!shippingAddress) {
+      return res.status(400).json({ success: false, message: "shippingAddress is required" });
     }
 
     const { fullName, phone } = shippingAddress;
@@ -130,13 +133,11 @@ export const createOrderAfterPayment = async (req, res) => {
     }
 
     const guestData = !userId ? { guestEmail, items: guestItems } : null;
-    
-    // Service function call
-    const order = await createOrderAfterPaymentService(userId, cfOrderId, shippingAddress, shippingMethod, guestData);
+    const order = await createOrderAfterPaymentService(userId, cfOrderId, shippingAddress, shippingMethod, guestData, paymentMethod);
 
     res.status(201).json({
       success: true,
-      message: "Order placed successfully.",
+      message: isCOD ? "Order placed successfully. Pay on delivery." : "Order placed successfully.",
       data: {
         orderId: order._id,
         orderNumber: order.orderNumber,

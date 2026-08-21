@@ -886,21 +886,25 @@ export const getOrderStatsService = async () => {
 // ─── 8. Check Delivery Availability ─────────────────────────────────────────
 
 
-export const createOrderAfterPaymentService = async (userId, cfOrderId, shippingAddress, shippingMethod = "delivery", guestData = null) => {
-  
-  // 1. Verify payment with Cashfree
-  const cashfreeOrder = await cashfreeService.getOrderDetails(cfOrderId);
-  
-  if (!cashfreeOrder || cashfreeOrder.order_status !== "PAID") {
-    throw Object.assign(
-      new Error("Payment not completed. Please complete payment via Cashfree first."), 
-      { statusCode: 400 }
-    );
+export const createOrderAfterPaymentService = async (userId, cfOrderId, shippingAddress, shippingMethod = "delivery", guestData = null, paymentMethod = "Cashfree") => {
+  const isCOD = paymentMethod === "COD";
+
+  // 1. Verify payment with Cashfree (skip for COD)
+  if (!isCOD) {
+    const cashfreeOrder = await cashfreeService.getOrderDetails(cfOrderId);
+    if (!cashfreeOrder || cashfreeOrder.order_status !== "PAID") {
+      throw Object.assign(
+        new Error("Payment not completed. Please complete payment via Cashfree first."),
+        { statusCode: 400 }
+      );
+    }
   }
 
-  // 2. Idempotency Check
-  const existing = await Order.findOne({ cfOrderId });
-  if (existing) return existing;
+  // 2. Idempotency Check (COD ke liye cfOrderId nahi hoga)
+  if (!isCOD) {
+    const existing = await Order.findOne({ cfOrderId });
+    if (existing) return existing;
+  }
 
   const isGuest = !userId;
 
@@ -990,8 +994,8 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
 
   const { itemsPrice, taxPrice, totalPrice } = calcPrices(orderItems, shippingPrice);
 
-  // Extract coupon data
-  const tags = cashfreeOrder?.order_tags || {};
+  // Extract coupon data (COD ke liye cashfreeOrder nahi hoga)
+  const tags = (!isCOD && cashfreeOrder?.order_tags) ? cashfreeOrder.order_tags : {};
   const couponMeta = tags.couponCode
     ? {
         code: tags.couponCode || null,
@@ -1011,11 +1015,13 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
     orderItems,
     shippingAddress,
     shippingMethod,
-    paymentMethod: "Cashfree",
-    paymentStatus: "paid",
-    orderStatus: "processing", 
-    cfOrderId,
-    paymentResult: { gatewayPaymentId: cfOrderId, paidAt: new Date() },
+    paymentMethod: isCOD ? "COD" : "Cashfree",
+    paymentStatus: isCOD ? "pending" : "paid",
+    orderStatus: isCOD ? "pending" : "processing",
+    ...((!isCOD && cfOrderId) && {
+      cfOrderId,
+      paymentResult: { gatewayPaymentId: cfOrderId, paidAt: new Date() },
+    }),
     itemsPrice,
     shippingPrice,
     taxPrice,
@@ -1028,14 +1034,16 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
           isFreeShipping: couponMeta.isFreeShipping,
         }
       : { code: null, couponId: null, discountAmount: 0, isFreeShipping: false },
-    statusHistory: [
-      { status: "pending", note: "Order placed via Cashfree" },
-      { status: "processing", note: "Payment verified, order is processing" },
-    ],
+    statusHistory: isCOD
+      ? [{ status: "pending", note: "COD order placed" }]
+      : [
+          { status: "pending", note: "Order placed via Cashfree" },
+          { status: "processing", note: "Payment verified, order is processing" },
+        ],
   });
 
-  // 7b. Delhivery Integration Call (SAFE EXECUTION)
-  if (shippingMethod === "delivery") {
+  // 7b. Delhivery Integration Call (only for paid orders, skip COD)
+  if (!isCOD && shippingMethod === "delivery") {
     try {
       if (typeof createDelhiveryShipment === 'function') {
         const delhiveryRes = await createDelhiveryShipment(order);
