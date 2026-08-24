@@ -890,8 +890,9 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
   const isCOD = paymentMethod === "COD";
 
   // 1. Verify payment with Cashfree (skip for COD)
+  let cashfreeOrder = null;
   if (!isCOD) {
-    const cashfreeOrder = await cashfreeService.getOrderDetails(cfOrderId);
+    cashfreeOrder = await cashfreeService.getOrderDetails(cfOrderId);
     if (!cashfreeOrder || cashfreeOrder.order_status !== "PAID") {
       throw Object.assign(
         new Error("Payment not completed. Please complete payment via Cashfree first."),
@@ -994,6 +995,7 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
 
   const { itemsPrice, taxPrice, totalPrice } = calcPrices(orderItems, shippingPrice);
 
+
   // Extract coupon data (COD ke liye cashfreeOrder nahi hoga)
   const tags = (!isCOD && cashfreeOrder?.order_tags) ? cashfreeOrder.order_tags : {};
   const couponMeta = tags.couponCode
@@ -1042,29 +1044,26 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
         ],
   });
 
-  // 7b. Delhivery Integration Call (only for paid orders, skip COD)
+  // 7b. Delhivery Integration Call (only for paid delivery orders)
   if (!isCOD && shippingMethod === "delivery") {
     try {
-      if (typeof createDelhiveryShipment === 'function') {
-        const delhiveryRes = await createDelhiveryShipment(order);
-        console.log("👉 Delhivery Response:", JSON.stringify(delhiveryRes, null, 2));
+      const delhiveryRes = await createDelhiveryShipment(order);
+      console.log("👉 Delhivery Response:", JSON.stringify(delhiveryRes, null, 2));
 
-        const waybill = delhiveryRes?.waybill || delhiveryRes?.packages?.[0]?.waybill;
-
-        if (delhiveryRes?.success || waybill) {
-          order.trackingDetails = {
-            trackingNumber: waybill,
-            courierName: delhiveryRes.courierName || "Delhivery",
-            trackingUrl: delhiveryRes.trackingUrl || `https://www.delhivery.com/track/package/${waybill}`,
-            shippedAt: new Date(),
-          };
-          await order.save();
-        }
+      if (delhiveryRes?.success && delhiveryRes?.waybill) {
+        order.trackingDetails = {
+          trackingNumber: delhiveryRes.waybill,
+          courierName:    "Delhivery",
+          trackingUrl:    delhiveryRes.trackingUrl,
+          shippedAt:      new Date(),
+        };
+        await order.save();
+        console.log("✅ Delhivery shipment created. Waybill:", delhiveryRes.waybill);
       } else {
-        console.warn("⚠️ createDelhiveryShipment function is not imported/defined.");
+        console.error("❌ Delhivery shipment failed:", delhiveryRes?.error);
       }
     } catch (delhiveryError) {
-      console.error("❌ Delhivery API Exception:", delhiveryError.message);
+      console.error("❌ Delhivery Exception:", delhiveryError.message);
     }
   }
 
@@ -1345,7 +1344,7 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
 
 export const checkDeliveryAvailabilityService = (lat, lng) => {
   const { lat: STORE_LAT, lng: STORE_LNG } = getStoreCoords();
-  const MAX_KM = parseFloat(process.env.MAX_DELIVERY_KM || "160");
+  const MAX_KM = parseFloat(process.env.MAX_DELIVERY_KM || "3660");
 
   const distance = haversineDistance(STORE_LAT, STORE_LNG, lat, lng);
   const distanceKm = parseFloat(distance.toFixed(2));

@@ -11,7 +11,7 @@ const DELIVERY_RULES = {
 
 // Runtime getters — dotenv is guaranteed to be loaded by the time these are called
 const getStoreCoords = () => ({ lat: parseFloat(process.env.STORE_LAT), lng: parseFloat(process.env.STORE_LNG) });
-const getMaxKm       = () => parseFloat(process.env.MAX_DELIVERY_KM  || "160");
+const getMaxKm       = () => parseFloat(process.env.MAX_DELIVERY_KM  || "3660");
 const getRangeKm     = () => parseFloat(process.env.DELIVERY_RANGE_KM || "16");
 
 /**
