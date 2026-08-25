@@ -692,196 +692,7 @@ export const getOrderStatsService = async () => {
   };
 };
 
-// ─── 8a. Create Order After Payment (Payment-First Flow) ────────────────────
 
-// export const createOrderAfterPaymentService = async (userId, paymentIntentId, shippingAddress, shippingMethod = "delivery", guestData = null) => {
-//   const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
-//   if (!intent || intent.status !== "succeeded") {
-//     throw Object.assign(new Error("Payment not completed. Please complete payment first."), { statusCode: 400 });
-//   }
-
-//   const existing = await Order.findOne({ paymentIntentId });
-//   if (existing) return existing;
-
-//   const isGuest = !userId;
-
-//   let rawItems;
-//   if (!isGuest) {
-//     const cart = await Cart.findOne({ userId });
-//     if (!cart || cart.items.length === 0) throw new Error("Your cart is empty");
-//     rawItems = cart.items;
-//   } else {
-//     if (!guestData?.items || guestData.items.length === 0) throw new Error("Cart items are required");
-//     if (!guestData?.guestEmail) throw Object.assign(new Error("Email is required for guest checkout"), { statusCode: 400 });
-//     rawItems = guestData.items;
-//   }
-
-//   const productIds = rawItems.map((i) => i.productId);
-//   const products = await Product.find({ _id: { $in: productIds } }).select(
-//     "title sku stock status images basePrice vatPercentage shipping_category hasVariants variants",
-//   );
-//   const productMap = {};
-//   products.forEach((p) => (productMap[p._id.toString()] = p));
-
-//   const stockErrors = [];
-//   for (const item of rawItems) {
-//     const product = productMap[item.productId.toString()];
-//     if (!product) { stockErrors.push(`Product "${item.name}" no longer exists`); continue; }
-//     if (product.status !== "Active") { stockErrors.push(`"${product.title}" is no longer available`); continue; }
-//     let availableStock;
-//     if (product.hasVariants && item.variantId) {
-//       const variant = product.variants.find((v) => v._id.toString() === item.variantId.toString());
-//       if (!variant) { stockErrors.push(`Variant not found for "${item.name}"`); continue; }
-//       availableStock = variant.stock;
-//     } else {
-//       availableStock = product.stock;
-//     }
-//     if (availableStock < item.quantity) {
-//       stockErrors.push(`${item.name} has only ${availableStock} unit(s) in stock (requested: ${item.quantity})`);
-//     }
-//   }
-//   if (stockErrors.length > 0) throw new Error(stockErrors.join(" | "));
-
-//   const orderItems = rawItems.map((item) => {
-//     const product = productMap[item.productId.toString()];
-//     let base, sku;
-//     if (product.hasVariants && item.variantId) {
-//       const variant = product.variants.find((v) => v._id.toString() === item.variantId.toString());
-//       base = variant.discountPrice ?? variant.price;
-//       sku = variant.sku || product.sku;
-//     } else {
-//       base = product.discountPrice ?? product.basePrice;
-//       sku = product.sku;
-//     }
-//     const vat = product.vatPercentage ? (base * product.vatPercentage) / 100 : 0;
-//     return {
-//       productId: item.productId,
-//       variantId: (product.hasVariants && item.variantId) ? item.variantId : null,
-//       name: item.name,
-//       sku,
-//       quantity: item.quantity,
-//       image: product.images?.[0]?.url || "",
-//       vatPercentage: product.vatPercentage ?? 0,
-//       shipping_category: product.shipping_category ?? "SP",
-//       priceAtPurchase: Number((base + vat).toFixed(2)),
-//     };
-//   });
-
-//   let shippingPrice = 0;
-//   if (shippingMethod === "delivery") {
-//     if (shippingAddress.lat == null || shippingAddress.lng == null) {
-//       throw Object.assign(new Error("lat and lng are required for delivery orders"), { statusCode: 400 });
-//     }
-//     const { lat: STORE_LAT, lng: STORE_LNG } = getStoreCoords();
-//     const distanceKm = haversineDistance(STORE_LAT, STORE_LNG, shippingAddress.lat, shippingAddress.lng);
-//     validateDeliveryRange(shippingAddress.lat, shippingAddress.lng);
-//     shippingPrice = calcCartDeliveryFee(orderItems, distanceKm);
-//   }
-
-//   const { itemsPrice, taxPrice, totalPrice } = calcPrices(orderItems, shippingPrice);
-
-//   const couponMeta = intent.metadata?.couponCode
-//     ? {
-//         code: intent.metadata.couponCode || null,
-//         couponId: intent.metadata.couponId || null,
-//         discountAmount: parseFloat(intent.metadata.discountAmount || "0"),
-//         type: null,
-//         isFreeShipping: intent.metadata.isFreeShipping === "true",
-//       }
-//     : null;
-
-//   const couponDiscount = couponMeta?.discountAmount || 0;
-//   const finalTotalPrice = parseFloat(Math.max(totalPrice - couponDiscount, 0).toFixed(2));
-
-//   const order = await Order.create({
-//     ...(isGuest ? { isGuest: true, guestEmail: guestData.guestEmail } : { userId }),
-//     orderItems,
-//     shippingAddress,
-//     shippingMethod,
-//     paymentMethod: "Stripe",
-//     paymentStatus: "paid",
-//     orderStatus: "pending",
-//     paymentIntentId,
-//     paymentResult: { gatewayPaymentId: paymentIntentId, paidAt: new Date() },
-//     itemsPrice,
-//     shippingPrice,
-//     taxPrice,
-//     totalPrice: finalTotalPrice,
-//     coupon: couponMeta
-//       ? {
-//           code: couponMeta.code,
-//           couponId: couponMeta.couponId,
-//           discountAmount: couponMeta.discountAmount,
-//           isFreeShipping: couponMeta.isFreeShipping,
-//         }
-//       : { code: null, couponId: null, discountAmount: 0, isFreeShipping: false },
-//     statusHistory: [
-//       { status: "pending", note: "Order placed" },
-//     ],
-//   });
-
-//   if (couponMeta?.couponId && couponMeta?.code) {
-//     try {
-//       await recordCouponUsageService({
-//         couponId:       couponMeta.couponId,
-//         couponCode:     couponMeta.code,
-//         userId:         isGuest ? null : userId,
-//         orderId:        order._id,
-//         guestEmail:     isGuest ? guestData.guestEmail : null,
-//         discountAmount: couponMeta.discountAmount,
-//       });
-//     } catch (couponErr) {
-//       console.error("Coupon usage recording failed:", couponErr.message);
-//     }
-//   }
-
-//   await Product.bulkWrite(
-//     rawItems.map((item) => {
-//       if (item.variantId) {
-//         return {
-//           updateOne: {
-//             filter: { _id: item.productId, "variants._id": item.variantId },
-//             update: { $inc: { "variants.$.stock": -item.quantity } },
-//           },
-//         };
-//       }
-//       return {
-//         updateOne: {
-//           filter: { _id: item.productId },
-//           update: { $inc: { stock: -item.quantity } },
-//         },
-//       };
-//     }),
-//   );
-
-//   if (!isGuest) {
-//     await Cart.findOneAndUpdate({ userId }, { $set: { items: [], totalPrice: 0, totalSavings: 0 } });
-//   }
-
-//   await checkAndNotifyStockOut(order.orderItems);
-
-//   try {
-//     let emailTo, nameTo;
-//     if (isGuest) {
-//       emailTo = guestData.guestEmail;
-//       nameTo = shippingAddress.fullName;
-//     } else {
-//       const user = await User.findById(userId).select("email name").lean();
-//       emailTo = user?.email;
-//       nameTo = user?.name;
-//     }
-//     if (emailTo) {
-//       await Promise.all([
-//         sendOrderConfirmationToUser(emailTo, nameTo, order),
-//         sendNewOrderAlertToAdmin(emailTo, nameTo, order),
-//       ]);
-//     }
-//   } catch (emailErr) {
-//     console.error("Email sending failed:", emailErr.message);
-//   }
-
-//   return order;
-// };
 
 // ─── 8. Check Delivery Availability ─────────────────────────────────────────
 
@@ -1045,7 +856,7 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
   });
 
   // 7b. Delhivery Integration Call (only for paid delivery orders)
-  if (!isCOD && shippingMethod === "delivery") {
+  if ( shippingMethod === "delivery") {
     try {
       const delhiveryRes = await createDelhiveryShipment(order);
       console.log("👉 Delhivery Response:", JSON.stringify(delhiveryRes, null, 2));
@@ -1141,206 +952,7 @@ export const createOrderAfterPaymentService = async (userId, cfOrderId, shipping
 
   return order;
 };
-// export const createOrderAfterPaymentService = async (userId, cfOrderId, shippingAddress, shippingMethod = "delivery", guestData = null) => {
-  
-//   // 1. Verify payment with Cashfree (COMMENTED FOR TESTING)
-//   /*
-//   const cashfreeOrder = await cashfreeService.getOrderDetails(cfOrderId);
-  
-//   if (!cashfreeOrder || cashfreeOrder.order_status !== "PAID") {
-//     throw Object.assign(
-//       new Error("Payment not completed. Please complete payment via Cashfree first."), 
-//       { statusCode: 400 }
-//     );
-//   }
-//   */
 
-//   // 2. Idempotency Check
-//   const existing = await Order.findOne({ cfOrderId });
-//   if (existing) return existing;
-
-//   const isGuest = !userId;
-
-//   // 3. Get raw items
-//   let rawItems;
-//   if (!isGuest) {
-//     const cart = await Cart.findOne({ userId });
-//     if (!cart || cart.items.length === 0) throw new Error("Your cart is empty");
-//     rawItems = cart.items;
-//   } else {
-//     if (!guestData?.items || guestData.items.length === 0) throw new Error("Cart items are required");
-//     if (!guestData?.guestEmail) throw Object.assign(new Error("Email is required for guest checkout"), { statusCode: 400 });
-//     rawItems = guestData.items;
-//   }
-
-//   const productIds = rawItems.map((i) => i.productId);
-//   const products = await Product.find({ _id: { $in: productIds } }).select(
-//     "title sku stock status images basePrice vatPercentage shipping_category hasVariants variants",
-//   );
-//   const productMap = {};
-//   products.forEach((p) => (productMap[p._id.toString()] = p));
-
-//   // 4. Validate stock
-//   const stockErrors = [];
-//   for (const item of rawItems) {
-//     const product = productMap[item.productId.toString()];
-//     if (!product) { stockErrors.push(`Product "${item.name}" no longer exists`); continue; }
-//     if (product.status !== "Active") { stockErrors.push(`"${product.title}" is no longer available`); continue; }
-//     let availableStock;
-//     if (product.hasVariants && item.variantId) {
-//       const variant = product.variants.find((v) => v._id.toString() === item.variantId.toString());
-//       if (!variant) { stockErrors.push(`Variant not found for "${item.name}"`); continue; }
-//       availableStock = variant.stock;
-//     } else {
-//       availableStock = product.stock;
-//     }
-//     if (availableStock < item.quantity) {
-//       stockErrors.push(`${item.name} has only ${availableStock} unit(s) in stock (requested: ${item.quantity})`);
-//     }
-//   }
-//   if (stockErrors.length > 0) throw new Error(stockErrors.join(" | "));
-
-//   // 5. Build order items
-//   const orderItems = rawItems.map((item) => {
-//     const product = productMap[item.productId.toString()];
-//     let base, sku;
-//     if (product.hasVariants && item.variantId) {
-//       const variant = product.variants.find((v) => v._id.toString() === item.variantId.toString());
-//       base = variant.discountPrice ?? variant.price;
-//       sku = variant.sku || product.sku;
-//     } else {
-//       base = product.discountPrice ?? product.basePrice;
-//       sku = product.sku;
-//     }
-//     const vat = product.vatPercentage ? (base * product.vatPercentage) / 100 : 0;
-//     return {
-//       productId: item.productId,
-//       variantId: (product.hasVariants && item.variantId) ? item.variantId : null,
-//       name: item.name,
-//       sku,
-//       quantity: item.quantity,
-//       image: product.images?.[0]?.url || "",
-//       vatPercentage: product.vatPercentage ?? 0,
-//       shipping_category: product.shipping_category ?? "SP",
-//       priceAtPurchase: Number((base + vat).toFixed(2)),
-//     };
-//   });
-
-//   // 6. Calculate shipping
-//   let shippingPrice = 0;
-//   if (shippingMethod === "delivery") {
-//     if (shippingAddress.lat == null || shippingAddress.lng == null) {
-//       throw Object.assign(new Error("lat and lng are required for delivery orders"), { statusCode: 400 });
-//     }
-//     const { lat: STORE_LAT, lng: STORE_LNG } = getStoreCoords();
-//     const distanceKm = haversineDistance(STORE_LAT, STORE_LNG, shippingAddress.lat, shippingAddress.lng);
-//     validateDeliveryRange(shippingAddress.lat, shippingAddress.lng);
-//     shippingPrice = calcCartDeliveryFee(orderItems, distanceKm);
-//   }
-
-//   const { itemsPrice, taxPrice, totalPrice } = calcPrices(orderItems, shippingPrice);
-
-//   // Safe Coupon Handling for Test Mode
-//   const couponDiscount = 0;
-//   const finalTotalPrice = parseFloat(Math.max(totalPrice - couponDiscount, 0).toFixed(2));
-
-//   // 7. Create order in MongoDB (UPDATED WITH FIXES)
-//   const order = await Order.create({
-//     ...(isGuest ? { isGuest: true, guestEmail: guestData.guestEmail } : { userId }),
-//     orderItems,
-//     shippingAddress,
-//     shippingMethod,
-//     paymentMethod: "Cashfree",
-//     paymentStatus: "paid",
-//     orderStatus: "processing", // ✅ Default status set to 'processing'
-//     cfOrderId,
-//     paymentResult: { gatewayPaymentId: cfOrderId, paidAt: new Date() },
-//     itemsPrice,
-//     shippingPrice,
-//     taxPrice,
-//     totalPrice: finalTotalPrice,
-//     coupon: { code: null, couponId: null, discountAmount: 0, isFreeShipping: false },
-//     statusHistory: [
-//       { status: "pending", note: "Order placed via Test Mode" },
-//       { status: "processing", note: "Payment verified, order processing" },
-//     ],
-//   });
-
-//   // Delhivery Integration Call (UPDATED WITH SAFE LOGIC)
-//   if (shippingMethod === "delivery") {
-//     try {
-//       const delhiveryRes = await createDelhiveryShipment(order);
-//       console.log("👉 Delhivery Response:", JSON.stringify(delhiveryRes, null, 2));
-
-//       const waybill = delhiveryRes?.waybill || delhiveryRes?.packages?.[0]?.waybill;
-
-//       if (delhiveryRes?.success || waybill) {
-//         order.trackingDetails = {
-//           trackingNumber: waybill,
-//           courierName: delhiveryRes.courierName || "Delhivery",
-//           trackingUrl: delhiveryRes.trackingUrl || `https://www.delhivery.com/track/package/${waybill}`,
-//           shippedAt: new Date(),
-//         };
-//         await order.save();
-//       } else {
-//         console.warn("⚠️ Delhivery AWB failed, but order created as Processing:", delhiveryRes?.rmk || delhiveryRes);
-//       }
-//     } catch (delhiveryError) {
-//       console.error("❌ Delhivery API Exception:", delhiveryError.message);
-//     }
-//   }
-
-//   // 8. Deduct stock
-//   await Product.bulkWrite(
-//     rawItems.map((item) => {
-//       if (item.variantId) {
-//         return {
-//           updateOne: {
-//             filter: { _id: item.productId, "variants._id": item.variantId },
-//             update: { $inc: { "variants.$.stock": -item.quantity } },
-//           },
-//         };
-//       }
-//       return {
-//         updateOne: {
-//           filter: { _id: item.productId },
-//           update: { $inc: { stock: -item.quantity } },
-//         },
-//       };
-//     }),
-//   );
-
-//   // 9. Clear cart
-//   if (!isGuest) {
-//     await Cart.findOneAndUpdate({ userId }, { $set: { items: [], totalPrice: 0, totalSavings: 0 } });
-//   }
-
-//   // 10. Auto-refill stock check
-//   await checkAndNotifyStockOut(order.orderItems);
-
-//   // 11. Send emails
-//   try {
-//     let emailTo, nameTo;
-//     if (isGuest) {
-//       emailTo = guestData.guestEmail;
-//       nameTo = shippingAddress.fullName;
-//     } else {
-//       const user = await User.findById(userId).select("email name").lean();
-//       emailTo = user?.email;
-//       nameTo = user?.name;
-//     }
-//     if (emailTo) {
-//       await Promise.all([
-//         sendOrderConfirmationToUser(emailTo, nameTo, order),
-//         sendNewOrderAlertToAdmin(emailTo, nameTo, order),
-//       ]);
-//     }
-//   } catch (emailErr) {
-//     console.error("Email sending failed:", emailErr.message);
-//   }
-
-//   return order;
-// };
 
 export const checkDeliveryAvailabilityService = (lat, lng) => {
   const { lat: STORE_LAT, lng: STORE_LNG } = getStoreCoords();
@@ -1577,10 +1189,157 @@ export const rejectCancellationService = async (orderId, adminId, rejectionReaso
 
 export const deleteOrderService = async (id) => {
   const order = await Order.findByIdAndDelete(id);
+  if (!order) throw new Error("Order not found");
+  return order;
+};
 
-  if (!order) {
-    throw new Error("Order not found");
+// ─── Manual Order (Admin) ───────────────────────────────────────────────────────────────────
+
+export const createManualOrderService = async ({
+  customer, items, paymentMethod = "CASH", paymentStatus = "paid",
+  shippingFee = 0, discountAmount = 0, transactionId = "",
+  adminNotes = "", shippingMethod = "delivery", adminId,
+}) => {
+  // 1. Fetch products
+  const productIds = items.map((i) => i.productId);
+  const products = await Product.find({ _id: { $in: productIds } }).select(
+    "title sku stock status images basePrice discountPrice vatPercentage shipping_category hasVariants variants"
+  );
+  const productMap = {};
+  products.forEach((p) => (productMap[p._id.toString()] = p));
+
+  // 2. Validate stock
+  const stockErrors = [];
+  for (const item of items) {
+    const product = productMap[item.productId.toString()];
+    if (!product) { stockErrors.push(`Product not found: ${item.productId}`); continue; }
+    if (product.status !== "Active") { stockErrors.push(`"${product.title}" is not active`); continue; }
+    let availableStock;
+    if (product.hasVariants && item.variantId) {
+      const variant = product.variants?.find((v) => v._id.toString() === item.variantId.toString());
+      if (!variant) { stockErrors.push(`Variant not found for "${product.title}"`); continue; }
+      availableStock = variant.stock;
+    } else {
+      availableStock = product.stock;
+    }
+    if (availableStock < item.quantity)
+      stockErrors.push(`"${product.title}" has only ${availableStock} unit(s) in stock`);
   }
+  if (stockErrors.length > 0) throw Object.assign(new Error(stockErrors.join(" | ")), { statusCode: 400 });
+
+  // 3. Build order items
+  const orderItems = items.map((item) => {
+    const product = productMap[item.productId.toString()];
+    let base, sku;
+    if (product.hasVariants && item.variantId) {
+      const variant = product.variants.find((v) => v._id.toString() === item.variantId.toString());
+      if (!variant) throw Object.assign(new Error(`Variant not found for "${product.title}"`), { statusCode: 400 });
+      // discountPrice null/0 hone par price use karo
+      base = (variant.discountPrice != null && variant.discountPrice > 0) ? variant.discountPrice : (variant.price ?? 0);
+      sku  = variant.sku || product.sku;
+    } else {
+      // discountPrice null/0 hone par basePrice use karo
+      base = (product.discountPrice != null && product.discountPrice > 0) ? product.discountPrice : (product.basePrice ?? 0);
+      sku  = product.sku;
+    }
+    const vat = (product.vatPercentage && base > 0) ? (base * product.vatPercentage) / 100 : 0;
+    const priceAtPurchase = Number((base + vat).toFixed(2));
+    console.log(`[ManualOrder] ${product.title} | base=${base} vat=${vat} price=${priceAtPurchase} qty=${item.quantity}`);
+    return {
+      productId:         item.productId,
+      variantId:         (product.hasVariants && item.variantId) ? item.variantId : null,
+      name:              product.title,
+      sku,
+      quantity:          item.quantity,
+      image:             product.images?.[0]?.url || "",
+      vatPercentage:     product.vatPercentage ?? 0,
+      shipping_category: product.shipping_category ?? "SP",
+      priceAtPurchase,
+    };
+  });
+
+  // 4. Calculate totals
+  const itemsPrice   = parseFloat(orderItems.reduce((acc, i) => acc + i.priceAtPurchase * i.quantity, 0).toFixed(2));
+  const shipping     = parseFloat(Number(shippingFee).toFixed(2));
+  const discount     = parseFloat(Number(discountAmount).toFixed(2));
+  const totalPrice   = parseFloat(Math.max(itemsPrice + shipping - discount, 0).toFixed(2));
+
+  // 5. Build shipping address from customer
+  const shippingAddress = {
+    fullName:   customer.fullName,
+    phone:      customer.phone,
+    address:    customer.address   || "",
+    city:       customer.city      || "",
+    postalCode: customer.postalCode || "",
+    state:      customer.state     || "",
+    country:    customer.country   || "India",
+    email:      customer.email     || "",
+  };
+
+  // 6. Create order
+  const isPaid = paymentStatus === "paid";
+  const order = await Order.create({
+    isManualOrder:  true,
+    isGuest:        true,                          // no userId — manual entry
+    guestEmail:     customer.email || "",
+    orderItems,
+    shippingAddress,
+    shippingMethod,
+    paymentMethod,
+    paymentStatus:  isPaid ? "paid" : "pending",
+    orderStatus:    isPaid ? "processing" : "pending",
+    itemsPrice,
+    shippingPrice:  shipping,
+    taxPrice:       0,
+    totalPrice,
+    coupon:         { code: null, couponId: null, discountAmount: discount, isFreeShipping: false },
+    paymentResult:  transactionId ? { gatewayPaymentId: transactionId, paidAt: isPaid ? new Date() : null } : undefined,
+    adminNotes,
+    statusHistory:  [{ status: isPaid ? "processing" : "pending", changedBy: adminId, note: adminNotes || "Manual order created by admin" }],
+  });
+
+  // 7. Deduct stock
+  await Product.bulkWrite(
+    items.map((item) =>
+      item.variantId
+        ? { updateOne: { filter: { _id: item.productId, "variants._id": item.variantId }, update: { $inc: { "variants.$.stock": -item.quantity } } } }
+        : { updateOne: { filter: { _id: item.productId }, update: { $inc: { stock: -item.quantity } } } }
+    )
+  );
+
+  // 8. Stock out check
+  try { await checkAndNotifyStockOut(order.orderItems); } catch (e) { console.error("Stock notify err:", e.message); }
+
+  // 9. Delhivery (only for paid delivery orders)
+  if (isPaid && shippingMethod === "delivery") {
+    try {
+      const delhiveryRes = await createDelhiveryShipment(order);
+      if (delhiveryRes?.success && delhiveryRes?.waybill) {
+        order.trackingDetails = {
+          trackingNumber: delhiveryRes.waybill,
+          courierName:    "Delhivery",
+          trackingUrl:    delhiveryRes.trackingUrl,
+          shippedAt:      new Date(),
+        };
+        await order.save();
+      }
+    } catch (e) { console.error("Delhivery manual order err:", e.message); }
+  }
+
+  // 10. Send emails
+  try {
+    const emailTo = customer.email;
+    const nameTo  = customer.fullName;
+    if (emailTo) {
+      await Promise.allSettled([
+        sendOrderConfirmationToUser(emailTo, nameTo, order),
+        sendNewOrderAlertToAdmin(emailTo, nameTo, order),
+      ]);
+    } else {
+      // No customer email — only alert admin
+      await sendNewOrderAlertToAdmin("", nameTo, order);
+    }
+  } catch (e) { console.error("Manual order email err:", e.message); }
 
   return order;
 };

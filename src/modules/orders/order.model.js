@@ -44,19 +44,21 @@ const orderSchema = new mongoose.Schema(
       default: "delivery",
     },
     shippingAddress: {
-      fullName: { type: String, required: true },
-      phone: { type: String, required: true },
-      address: { type: String },
-      city: { type: String },
+      fullName:   { type: String, required: true },
+      phone:      { type: String, required: true },
+      address:    { type: String },
+      city:       { type: String },
+      state:      { type: String },
       postalCode: { type: String },
-      country: { type: String, default: "United Kingdom" },
-      lat: { type: Number, default: null },
-      lng: { type: Number, default: null },
+      country:    { type: String, default: "India" },
+      email:      { type: String },
+      lat:        { type: Number, default: null },
+      lng:        { type: Number, default: null },
     },
     // --- PAYMENT ---
     paymentMethod: {
       type: String,
-      enum: ["Stripe", "Razorpay", "PayPal", "Cashfree", "COD"],
+      enum: ["Stripe", "Razorpay", "PayPal", "Cashfree", "COD", "UPI_DIRECT", "BANK_TRANSFER", "CASH"],
       required: true,
       default: "COD",
     },
@@ -138,6 +140,10 @@ const orderSchema = new mongoose.Schema(
       type: { type: String, default: null },
       isFreeShipping: { type: Boolean, default: false },
     },
+
+    // --- MANUAL ORDER ---
+    isManualOrder: { type: Boolean, default: false },
+    adminNotes:    { type: String, default: null },
 
     // --- CANCELLATION ---
     cancelledAt: { type: Date },

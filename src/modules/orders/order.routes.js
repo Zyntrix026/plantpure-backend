@@ -17,6 +17,7 @@ import {
   getCancellationRequests,
   approveCancellation,
   rejectCancellation,
+  createManualOrder,
 } from "./order.controller.js";
 import {
   authenticatedUser,
@@ -42,6 +43,7 @@ router.get("/my-orders", authenticatedUser, getMyOrders);
 router.post("/request-cancellation/:id", authenticatedUser, requestOrderCancellation);      // customer request cancellation
 
 // ─── Admin Routes ─────────────────────────────────────────────────────────────
+router.post("/admin/manual", adminOnly, createManualOrder);
 router.get("/admin/all", adminOnly, getAllOrders);
 router.get("/admin/stats", adminOnly, getOrderStats);
 router.get("/admin/cancellation-requests", adminOnly, getCancellationRequests);

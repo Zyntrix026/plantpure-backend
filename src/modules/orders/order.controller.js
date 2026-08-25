@@ -16,6 +16,7 @@ import {
   getCancellationRequestsService,
   approveCancellationService,
   rejectCancellationService,
+  createManualOrderService,
 } from "./order.service.js";
 
 const ALLOWED_STATUSES = [
@@ -158,6 +159,7 @@ export const createOrderAfterPayment = async (req, res) => {
     } = req.body;
     const userId = req.user?.userId ?? null;
     const isCOD = paymentMethod === "COD";
+   
 
     if (!isCOD && !cfOrderId) {
       return res.status(400).json({
@@ -205,7 +207,6 @@ export const createOrderAfterPayment = async (req, res) => {
         });
     }
     const guestData = !userId ? { guestEmail, items: guestItems } : null;
-    
     const order = await createOrderAfterPaymentService(
       userId,
       cfOrderId,
@@ -574,14 +575,54 @@ export const trackGuestOrder = async (req, res) => {
   }
 };
 
+// ─── POST /orders/admin/manual ───────────────────────────────────────────────
+export const createManualOrder = async (req, res) => {
+  try {
+    const {
+      customer,        // { fullName, email, phone, address, city, postalCode, state, country }
+      items,           // [{ productId, variantId?, quantity }]
+      paymentMethod,   // "UPI_DIRECT" | "BANK_TRANSFER" | "CASH" | "COD"
+      paymentStatus,   // "paid" | "pending"
+      shippingFee,
+      discountAmount,
+      transactionId,
+      adminNotes,
+      shippingMethod = "delivery",
+    } = req.body;
+
+    if (!customer?.fullName || !customer?.phone)
+      return res.status(400).json({ success: false, message: "customer.fullName and customer.phone are required" });
+    if (!items || items.length === 0)
+      return res.status(400).json({ success: false, message: "At least one item is required" });
+
+    const order = await createManualOrderService({
+      customer, items, paymentMethod, paymentStatus,
+      shippingFee, discountAmount, transactionId, adminNotes, shippingMethod,
+      adminId: req.user.userId,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Manual order created successfully",
+      data: {
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        totalPrice: order.totalPrice,
+        paymentStatus: order.paymentStatus,
+        orderStatus: order.orderStatus,
+      },
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ success: false, message: error.message });
+  }
+};
+
 // ─── DELETE /orders/admin/:id ─────────────────────────────────────────────────
 export const deleteOrder = async (req, res) => {
   try {
     const { id } = req.params;
     if (!id)
-      return res
-        .status(400)
-        .json({ success: false, message: "Order ID is required" });
+      return res.status(400).json({ success: false, message: "Order ID is required" });
 
     if (req.user.role !== "admin")
       return res
