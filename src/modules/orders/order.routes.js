@@ -18,6 +18,10 @@ import {
   approveCancellation,
   rejectCancellation,
   createManualOrder,
+  createAdminShipment,
+  getShippingLabel,
+  trackAdminShipment,
+  cancelAdminShipment,
 } from "./order.controller.js";
 import {
   authenticatedUser,
@@ -52,6 +56,12 @@ router.patch("/admin/cancellation-requests/:id/reject", adminOnly, rejectCancell
 router.patch("/admin/status/:id", adminOnly, updateOrderStatus);
 router.post("/admin/cancel/:id", adminOnly, cancelOrder);
 router.delete("/admin/:id", adminOnly, deleteOrder);
+
+// ─── Admin Shipment Management ────────────────────────────────────────────────
+router.post("/admin/:id/create-shipment", adminOnly, createAdminShipment);
+router.get("/admin/:id/shipping-label", adminOnly, getShippingLabel);
+router.get("/admin/:id/track-shipment", adminOnly, trackAdminShipment);
+router.post("/admin/:id/cancel-shipment", adminOnly, cancelAdminShipment);
 
 // ─── Shared (Customer sees own, Admin sees any) ───────────────────────────────
 router.get("/:id", anyAuthenticated, getOrderById);

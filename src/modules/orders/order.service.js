@@ -2,7 +2,12 @@ import mongoose from "mongoose";
 import { Order } from "./order.model.js";
 import { Cart } from "../cart/cart.model.js";
 import { Product } from "../products/product.model.js";
-import { createDelhiveryShipment } from "../../utils/delhivery.service.js";
+import {
+  createDelhiveryShipment,
+  fetchShippingLabel,
+  trackDelhiveryShipment,
+  cancelDelhiveryShipment,
+} from "../../utils/delhivery.service.js";
 import User from "../users/user.model.js";
 import { checkAndNotifyStockOut, checkAndRefillStock } from "../../utils/autoStockRefill.js";
 import {
@@ -1341,5 +1346,266 @@ export const createManualOrderService = async ({
     }
   } catch (e) { console.error("Manual order email err:", e.message); }
 
+  return order;
+};
+
+// ─── 11. Create Shipment (Admin Panel) ───────────────────────────────────────
+export const createAdminShipmentService = async (orderId, adminId, shipmentData = {}) => {
+  const order = await Order.findById(orderId);
+  if (!order) {
+    throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+  }
+
+  if (order.orderStatus === "cancelled") {
+    throw Object.assign(new Error("Cannot create shipment for a cancelled order"), { statusCode: 400 });
+  }
+
+  const {
+    courier = "Delhivery",
+    weight = 0.5,
+    length = 10,
+    width = 10,
+    height = 10,
+    pickupLocation = process.env.DELHIVERY_PICKUP_LOCATION || "CRAFTWORLD SURFACE",
+    shippingMode = "Surface",
+    customWaybill = null,
+    updateStatusToShipped = true,
+  } = shipmentData;
+
+  let shipmentResult = {
+    courierName: courier,
+    trackingNumber: customWaybill,
+    trackingUrl: null,
+    labelUrl: null,
+    pickupLocation,
+    weight: parseFloat(weight) || 0.5,
+    dimensions: {
+      length: parseFloat(length) || 10,
+      width: parseFloat(width) || 10,
+      height: parseFloat(height) || 10,
+    },
+    shipmentStatus: "Manifested",
+    shippingMode,
+    shippedAt: new Date(),
+  };
+
+  if (courier.toLowerCase() === "delhivery") {
+    const delhiveryRes = await createDelhiveryShipment(order, {
+      weight,
+      length,
+      width,
+      height,
+      pickupLocation,
+      shippingMode,
+      assignedWaybill: customWaybill,
+    });
+
+    if (!delhiveryRes?.success) {
+      throw Object.assign(new Error(delhiveryRes?.error || "Delhivery shipment creation failed"), { statusCode: 400 });
+    }
+
+    shipmentResult = {
+      courierName: "Delhivery",
+      trackingNumber: delhiveryRes.waybill,
+      trackingUrl: delhiveryRes.trackingUrl || `https://www.delhivery.com/track/package/${delhiveryRes.waybill}`,
+      labelUrl: delhiveryRes.labelUrl || null,
+      pickupLocation: delhiveryRes.pickupLocation || pickupLocation,
+      weight: delhiveryRes.weight || parseFloat(weight),
+      dimensions: delhiveryRes.dimensions || { length, width, height },
+      shipmentStatus: "Manifested",
+      shippingMode: delhiveryRes.shippingMode || shippingMode,
+      shippedAt: new Date(),
+      rawShipmentResponse: delhiveryRes.rawResponse,
+    };
+  } else {
+    if (!customWaybill) {
+      throw Object.assign(new Error("AWB / Tracking Number is required for custom courier"), { statusCode: 400 });
+    }
+    shipmentResult.trackingUrl = shipmentData.trackingUrl || null;
+  }
+
+  // Update order tracking
+  order.trackingDetails = {
+    ...(order.trackingDetails || {}),
+    ...shipmentResult,
+  };
+
+  // Update status to shipped if requested
+  if (updateStatusToShipped && ["pending", "confirmed", "processing"].includes(order.orderStatus)) {
+    order.orderStatus = "shipped";
+    order.statusHistory.push({
+      status: "shipped",
+      changedBy: adminId,
+      note: `Shipment created via ${courier}. AWB: ${shipmentResult.trackingNumber}`,
+      changedAt: new Date(),
+    });
+  } else {
+    order.statusHistory.push({
+      status: order.orderStatus,
+      changedBy: adminId,
+      note: `Shipment manifest generated via ${courier}. AWB: ${shipmentResult.trackingNumber}`,
+      changedAt: new Date(),
+    });
+  }
+
+  await order.save();
+  return order;
+};
+
+// ─── 12. Get Shipping Label (Admin Panel) ────────────────────────────────────
+export const getShippingLabelService = async (orderId) => {
+  const order = await Order.findById(orderId);
+  if (!order) {
+    throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+  }
+
+  const tracking = order.trackingDetails || {};
+  const waybill = tracking.trackingNumber;
+
+  if (!waybill) {
+    throw Object.assign(new Error("No shipment/AWB found for this order. Please create a shipment first."), { statusCode: 400 });
+  }
+
+  let labelUrl = tracking.labelUrl || null;
+
+  // If labelUrl is missing and courier is Delhivery, fetch from API
+  if (!labelUrl && (tracking.courierName || "").toLowerCase() === "delhivery") {
+    try {
+      const labelRes = await fetchShippingLabel(waybill);
+      if (labelRes?.success && labelRes?.labelUrl) {
+        labelUrl = labelRes.labelUrl;
+        order.trackingDetails.labelUrl = labelUrl;
+        await order.save();
+      }
+    } catch (err) {
+      console.warn("Could not fetch remote Delhivery label:", err.message);
+    }
+  }
+
+  return {
+    orderId: order._id,
+    orderNumber: order.orderNumber,
+    waybill,
+    courierName: tracking.courierName || "Delhivery",
+    labelUrl,
+    shippingAddress: order.shippingAddress,
+    orderItems: order.orderItems,
+    totalPrice: order.totalPrice,
+    paymentMethod: order.paymentMethod,
+    paymentStatus: order.paymentStatus,
+    weight: tracking.weight || 0.5,
+    dimensions: tracking.dimensions || { length: 10, width: 10, height: 10 },
+    pickupLocation: tracking.pickupLocation || "CRAFTWORLD SURFACE",
+    createdAt: order.createdAt,
+  };
+};
+
+// ─── 13. Track Live Shipment Status (Admin Panel) ────────────────────────────
+export const trackShipmentService = async (orderId) => {
+  const order = await Order.findById(orderId);
+  if (!order) {
+    throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+  }
+
+  const tracking = order.trackingDetails || {};
+  const waybill = tracking.trackingNumber;
+
+  if (!waybill) {
+    throw Object.assign(new Error("No tracking number attached to this order"), { statusCode: 400 });
+  }
+
+  let trackResult = {
+    waybill,
+    courierName: tracking.courierName || "Delhivery",
+    status: tracking.shipmentStatus || "Manifested",
+    trackingUrl: tracking.trackingUrl || `https://www.delhivery.com/track/package/${waybill}`,
+    scans: [],
+  };
+
+  if ((tracking.courierName || "").toLowerCase() === "delhivery") {
+    const liveRes = await trackDelhiveryShipment(waybill);
+    if (liveRes?.success) {
+      trackResult = {
+        ...trackResult,
+        status: liveRes.status,
+        location: liveRes.location,
+        statusDateTime: liveRes.statusDateTime,
+        expectedDelivery: liveRes.expectedDelivery,
+        scans: liveRes.scans || [],
+      };
+
+      // Sync status with order
+      order.trackingDetails.shipmentStatus = liveRes.status;
+      if (liveRes.expectedDelivery) {
+        order.trackingDetails.estimatedDeliveryDate = new Date(liveRes.expectedDelivery);
+      }
+
+      const statusLower = (liveRes.status || "").toLowerCase();
+      if (statusLower.includes("delivered") && order.orderStatus !== "delivered") {
+        order.orderStatus = "delivered";
+        order.trackingDetails.deliveredAt = new Date();
+        order.statusHistory.push({
+          status: "delivered",
+          note: "Delivered according to Delhivery live tracking",
+          changedAt: new Date(),
+        });
+      } else if (
+        (statusLower.includes("out for delivery") || statusLower.includes("dispatched")) &&
+        order.orderStatus !== "out_for_delivery" &&
+        order.orderStatus !== "delivered"
+      ) {
+        order.orderStatus = "out_for_delivery";
+        order.trackingDetails.outForDeliveryAt = new Date();
+        order.statusHistory.push({
+          status: "out_for_delivery",
+          note: "Out for delivery according to Delhivery live tracking",
+          changedAt: new Date(),
+        });
+      }
+
+      await order.save();
+    }
+  }
+
+  return {
+    orderId: order._id,
+    orderNumber: order.orderNumber,
+    orderStatus: order.orderStatus,
+    trackingDetails: order.trackingDetails,
+    ...trackResult,
+  };
+};
+
+// ─── 14. Cancel Shipment (Admin Panel) ───────────────────────────────────────
+export const cancelShipmentService = async (orderId, adminId, reason = "") => {
+  const order = await Order.findById(orderId);
+  if (!order) {
+    throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+  }
+
+  const tracking = order.trackingDetails || {};
+  const waybill = tracking.trackingNumber;
+
+  if (!waybill) {
+    throw Object.assign(new Error("No active shipment to cancel"), { statusCode: 400 });
+  }
+
+  if ((tracking.courierName || "").toLowerCase() === "delhivery") {
+    try {
+      await cancelDelhiveryShipment(waybill);
+    } catch (err) {
+      console.warn("Delhivery cancellation notice:", err.message);
+    }
+  }
+
+  order.trackingDetails.shipmentStatus = "Cancelled";
+  order.statusHistory.push({
+    status: order.orderStatus,
+    changedBy: adminId,
+    note: `Shipment cancelled by admin. AWB: ${waybill}. Reason: ${reason || "Not specified"}`,
+    changedAt: new Date(),
+  });
+
+  await order.save();
   return order;
 };

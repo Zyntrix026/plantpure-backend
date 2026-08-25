@@ -111,15 +111,26 @@ const orderSchema = new mongoose.Schema(
         changedAt: { type: Date, default: Date.now },
       },
     ],
-    // --- TRACKING (Delivery only) ---
+    // --- TRACKING & SHIPMENT (Delivery only) ---
     trackingDetails: {
-      trackingNumber: { type: String, default: null },
+      trackingNumber: { type: String, default: null }, // AWB / Waybill
       courierName: { type: String, default: null },
       trackingUrl: { type: String, default: null },
+      labelUrl: { type: String, default: null },
+      pickupLocation: { type: String, default: null },
+      weight: { type: Number, default: null },
+      dimensions: {
+        length: { type: Number, default: 10 },
+        width: { type: Number, default: 10 },
+        height: { type: Number, default: 10 },
+      },
+      shipmentStatus: { type: String, default: null },
+      shippingMode: { type: String, default: "Surface" },
       estimatedDeliveryDate: { type: Date, default: null },
       shippedAt: { type: Date, default: null },
       outForDeliveryAt: { type: Date, default: null },
       deliveredAt: { type: Date, default: null },
+      rawShipmentResponse: { type: mongoose.Schema.Types.Mixed, default: null },
     },
     // --- PICKUP (Store Pickup only) ---
     pickupDetails: {

@@ -17,6 +17,10 @@ import {
   approveCancellationService,
   rejectCancellationService,
   createManualOrderService,
+  createAdminShipmentService,
+  getShippingLabelService,
+  trackShipmentService,
+  cancelShipmentService,
 } from "./order.service.js";
 
 const ALLOWED_STATUSES = [
@@ -644,3 +648,96 @@ export const deleteOrder = async (req, res) => {
       .json({ success: false, message: error.message });
   }
 };
+
+// ─── POST /orders/admin/:id/create-shipment ──────────────────────────────────
+export const createAdminShipment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user.userId;
+    const shipmentData = req.body || {};
+
+    const updatedOrder = await createAdminShipmentService(id, adminId, shipmentData);
+
+    res.status(200).json({
+      success: true,
+      message: `Shipment created successfully via ${updatedOrder.trackingDetails?.courierName || 'courier'}.`,
+      data: {
+        orderId: updatedOrder._id,
+        orderNumber: updatedOrder.orderNumber,
+        orderStatus: updatedOrder.orderStatus,
+        trackingDetails: updatedOrder.trackingDetails,
+      },
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to create shipment",
+    });
+  }
+};
+
+// ─── GET /orders/admin/:id/shipping-label ────────────────────────────────────
+export const getShippingLabel = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const labelData = await getShippingLabelService(id);
+
+    res.status(200).json({
+      success: true,
+      message: "Shipping label retrieved successfully",
+      data: labelData,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to retrieve shipping label",
+    });
+  }
+};
+
+// ─── GET /orders/admin/:id/track-shipment ────────────────────────────────────
+export const trackAdminShipment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const trackingInfo = await trackShipmentService(id);
+
+    res.status(200).json({
+      success: true,
+      message: "Live tracking details retrieved successfully",
+      data: trackingInfo,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to track shipment",
+    });
+  }
+};
+
+// ─── POST /orders/admin/:id/cancel-shipment ──────────────────────────────────
+export const cancelAdminShipment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user.userId;
+    const { reason } = req.body || {};
+
+    const updatedOrder = await cancelShipmentService(id, adminId, reason);
+
+    res.status(200).json({
+      success: true,
+      message: "Shipment cancelled successfully",
+      data: {
+        orderId: updatedOrder._id,
+        orderNumber: updatedOrder.orderNumber,
+        orderStatus: updatedOrder.orderStatus,
+        trackingDetails: updatedOrder.trackingDetails,
+      },
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to cancel shipment",
+    });
+  }
+};
+
